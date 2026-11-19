@@ -41,6 +41,7 @@ function createRenderer(canvas) {
     antialias: false,
     depth: false,
     stencil: false,
+    preserveDrawingBuffer: true,
     powerPreference: "low-power",
     failIfMajorPerformanceCaveat: true
   });
@@ -157,6 +158,10 @@ export function enhanceVideo(host, video) {
   function draw() {
     requestedFrame = undefined;
     if (!playing || unavailable) return;
+    if (video.seeking || video.readyState < video.HAVE_CURRENT_DATA) {
+      requestedFrame = video.requestVideoFrameCallback(draw);
+      return;
+    }
     try {
       const started = performance.now();
       if (!renderer.draw(video)) {

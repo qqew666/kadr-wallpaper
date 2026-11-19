@@ -7,6 +7,7 @@ export function mountPlayer(host, options, callbacks) {
   const abort = new AbortController();
   const canvas = video ? null : element.getContext("2d", { alpha: false });
   const enhancement = video ? enhanceVideo(host, element) : null;
+  const loopFrame = video ? keepFrameBetweenLoops(host, element) : null;
   const resizeObserver = video ? null : new ResizeObserver(updateGifSize);
   let disposed = false;
   let ready = false;
@@ -30,10 +31,10 @@ export function mountPlayer(host, options, callbacks) {
   setFit(options.fit);
   if (video) {
     element.playsInline = true;
-    element.loop = true;
     element.muted = true;
     element.preload = "auto";
     element.addEventListener("loadeddata", () => markReady(element.videoWidth, element.videoHeight), { once: true });
+    element.addEventListener("ended", startVideo);
     element.addEventListener("error", reportError);
     element.src = source.href;
   } else {
@@ -59,6 +60,7 @@ export function mountPlayer(host, options, callbacks) {
     failed = true;
     stopGif();
     enhancement?.dispose();
+    loopFrame?.dispose();
     if (video) element.pause();
     callbacks.error(video
       ? "Не удалось воспроизвести MP4. Проверьте файл и кодек. Рекомендуется H.264."
@@ -192,10 +194,8 @@ export function mountPlayer(host, options, callbacks) {
   function updatePlayback() {
     if (!ready || disposed || failed) return;
     if (video) {
-      if (playing && element.paused) {
-        element.play().catch(error => {
-          if (playing && error.name !== "AbortError") reportError();
-        });
+      if (playing && (element.paused || element.ended)) {
+        startVideo();
       } else if (!playing) {
         element.pause();
       }
@@ -208,11 +208,24 @@ export function mountPlayer(host, options, callbacks) {
     }
   }
 
+  function startVideo() {
+    if (!playing || disposed || failed) return;
+    try {
+      if (element.ended) loopFrame.rewind();
+      element.play().catch(error => {
+        if (playing && error.name !== "AbortError") reportError();
+      });
+    } catch {
+      reportError();
+    }
+  }
+
   function setFit(value) {
     fit = value;
     element.classList.toggle("contain", fit === "contain");
     element.classList.toggle("fill", fit === "fill");
     enhancement?.setFit(fit);
+    loopFrame?.setFit(fit);
     updateGifSize();
   }
 
@@ -231,12 +244,105 @@ export function mountPlayer(host, options, callbacks) {
       decoder?.close();
       resizeObserver?.disconnect();
       enhancement?.dispose();
+      loopFrame?.dispose();
       if (video) {
         element.pause();
         element.removeAttribute("src");
         element.load();
       }
       element.remove();
+    }
+  };
+}
+
+function keepFrameBetweenLoops(host, video) {
+  const frame = document.createElement("canvas");
+  frame.hidden = true;
+  frame.setAttribute("aria-hidden", "true");
+  const context = frame.getContext("2d", { alpha: false });
+  let captured = false;
+  let frameRequest;
+  let presentation;
+  let fallback;
+
+  video.addEventListener("timeupdate", saveNearEnd);
+  video.addEventListener("seeked", waitForNewFrame);
+
+  function capture() {
+    if (!context || video.seeking || video.readyState < video.HAVE_CURRENT_DATA) return;
+    const { videoWidth, videoHeight } = video;
+    if (!videoWidth || !videoHeight) return;
+    // The still only covers the seek, so keep its backing buffer small.
+    const scale = Math.min(1, Math.sqrt((1280 * 720) / (videoWidth * videoHeight)));
+    const width = Math.max(1, Math.floor(videoWidth * scale));
+    const height = Math.max(1, Math.floor(videoHeight * scale));
+    if (frame.width !== width || frame.height !== height) {
+      captured = false;
+      frame.width = width;
+      frame.height = height;
+    }
+    try {
+      context.drawImage(video, 0, 0, width, height);
+      captured = true;
+    } catch {
+      // A decoder may temporarily withhold its frame at the end of a clip.
+    }
+  }
+
+  function saveNearEnd() {
+    if (frame.hidden && video.duration - video.currentTime < 0.35) capture();
+  }
+
+  function cancelWait() {
+    clearTimeout(fallback);
+    if (frameRequest !== undefined) video.cancelVideoFrameCallback(frameRequest);
+    if (presentation !== undefined) cancelAnimationFrame(presentation);
+    frameRequest = undefined;
+    presentation = undefined;
+    fallback = undefined;
+  }
+
+  function revealVideo() {
+    cancelWait();
+    if (video.seeking || video.readyState < video.HAVE_CURRENT_DATA) {
+      waitForNewFrame();
+    } else {
+      frame.hidden = true;
+    }
+  }
+
+  function waitForNewFrame() {
+    if (frame.hidden) return;
+    cancelWait();
+    if (video.requestVideoFrameCallback) {
+      frameRequest = video.requestVideoFrameCallback(() => {
+        frameRequest = undefined;
+        presentation = requestAnimationFrame(revealVideo);
+        fallback = setTimeout(revealVideo, 50);
+      });
+    } else {
+      fallback = setTimeout(revealVideo, 32);
+    }
+  }
+
+  return {
+    setFit(fit) {
+      frame.className = `media video-loop-frame ${fit}`;
+    },
+    rewind() {
+      cancelWait();
+      capture();
+      if (captured) {
+        host.append(frame);
+        frame.hidden = false;
+      }
+      video.currentTime = video.seekable.length ? video.seekable.start(0) : 0;
+    },
+    dispose() {
+      cancelWait();
+      video.removeEventListener("timeupdate", saveNearEnd);
+      video.removeEventListener("seeked", waitForNewFrame);
+      frame.remove();
     }
   };
 }
