@@ -1,0 +1,5 @@
+* text=auto
+*.ico binary
+*.mp4 binary
+*.rgba binary
+*.webp binary

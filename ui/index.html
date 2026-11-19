@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Кадр — живые обои</title>
+  <link rel="stylesheet" href="app.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="mark" aria-hidden="true"><i></i></span>
+        <div><strong>Кадр</strong><small>Живые обои</small></div>
+      </div>
+      <div class="library-heading"><h2>Библиотека</h2><span id="count">1</span></div>
+      <div id="library" class="library" aria-label="Библиотека обоев"></div>
+      <div class="sidebar-footer">
+        <div class="drop-note"><span class="drop-symbol" aria-hidden="true">↓</span><div><strong>Перетащите файлы</strong><small>Видео MP4 или анимации GIF</small></div></div>
+      </div>
+    </aside>
+
+    <main>
+      <header class="page-header">
+        <div>
+          <h1>Студия обоев</h1>
+          <p>Выберите фон и настройте его для своего экрана.</p>
+        </div>
+        <button id="import" class="button button-secondary"><span class="plus" aria-hidden="true"></span>Импортировать</button>
+      </header>
+
+      <section class="preview" aria-label="Предпросмотр">
+        <div id="stage" class="preview-stage"></div>
+        <div class="preview-shade"></div>
+        <span class="preview-label"><i></i>Предпросмотр</span>
+        <div class="preview-caption">
+          <div><h2 id="title">Северное сияние</h2><p id="details">Встроенные обои</p></div>
+          <button id="preview-play" class="round-button" aria-label="Приостановить предпросмотр" title="Приостановить предпросмотр" disabled><span class="pause-icon" aria-hidden="true"></span></button>
+        </div>
+      </section>
+
+      <div id="notice" class="notice" role="status" hidden></div>
+
+      <section class="settings" aria-labelledby="settings-heading">
+        <div class="settings-heading"><h2 id="settings-heading">Настройки обоев</h2><button id="remove" class="text-button" hidden>Убрать из библиотеки</button></div>
+        <div class="settings-grid">
+          <label><span>Монитор</span><select id="monitor"><option value="all">Все мониторы</option></select></label>
+          <label><span>Масштабирование</span><select id="fit"><option value="cover">Заполнить экран</option><option value="contain">Уместить целиком</option><option value="fill">Растянуть</option></select></label>
+          <label class="volume"><span>Звук обоев</span><span class="switch-frame"><input type="checkbox" id="audio" role="switch"><span class="switch" aria-hidden="true"></span><span id="sound-label">Выключен</span></span></label>
+        </div>
+      </section>
+
+      <footer class="actions">
+        <div class="desktop-status"><span id="status-dot"></span><div><strong id="status-title">Рабочий стол</strong><small id="status-description">Обои не установлены</small></div></div>
+        <div class="action-buttons">
+          <button id="stop" class="text-button" hidden>Снять</button>
+          <button id="pause" class="button button-secondary" hidden>Пауза</button>
+          <button id="apply" class="button button-primary" disabled><span class="monitor-icon" aria-hidden="true"></span>Установить обои</button>
+        </div>
+      </footer>
+    </main>
+  </div>
+  <div id="drop-overlay" class="drop-overlay" hidden><div><span aria-hidden="true">↓</span><strong>Добавить в библиотеку</strong><small>Отпустите файлы MP4 или GIF</small></div></div>
+</body>
+</html>
