@@ -5,6 +5,9 @@ const demo = "00000000-0000-0000-0000-000000000001";
 const send = (kind, data = {}) => window.ipc?.postMessage(JSON.stringify({ kind, ...data }));
 const playButton = get("preview-play");
 const applyButton = get("apply");
+const search = get("search");
+const systemTheme = matchMedia("(prefers-color-scheme: dark)");
+const initialTheme = window.kadrTheme ?? "system";
 const formatSize = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 });
 
 let state;
@@ -16,6 +19,18 @@ let managerVisible = true;
 let selectionError = "";
 let libraryKey;
 let monitorsKey;
+let favoriteIds = new Set();
+let favoritesOnly = false;
+
+function applyTheme(theme) {
+  const effective = theme === "system" ? (systemTheme.matches ? "dark" : "light") : theme;
+  if (document.documentElement.dataset.theme !== effective) {
+    document.documentElement.dataset.theme = effective;
+  }
+}
+
+applyTheme(initialTheme);
+systemTheme.addEventListener("change", () => applyTheme(state?.theme ?? initialTheme));
 
 function notice(message, error = false) {
   const element = get("notice");
@@ -26,14 +41,17 @@ function notice(message, error = false) {
 
 function renderLibrary() {
   const list = get("library");
-  const key = state.items.map(item => item.id).join(",");
+  const query = searchName(search.value.trim());
+  const matching = state.items.filter(item =>
+    (!favoritesOnly || favoriteIds.has(item.id)) && (!query || searchName(item.name).includes(query)));
+  const key = matching.map(item => item.id).join(",");
   if (key !== libraryKey) {
     libraryKey = key;
     const focused = list.contains(document.activeElement) ? document.activeElement.dataset.id : null;
     const items = document.createDocumentFragment();
-    for (const item of state.items) items.append(libraryButton(item));
+    for (const item of matching) items.append(libraryButton(item));
     list.replaceChildren(items);
-    get("count").textContent = state.items.length;
+    get("count").textContent = matching.length;
     if (focused) Array.from(list.children).find(button => button.dataset.id === focused)?.focus();
   }
   for (const button of list.children) {
@@ -41,7 +59,15 @@ function renderLibrary() {
     if (button.getAttribute("aria-pressed") !== pressed) button.setAttribute("aria-pressed", pressed);
     const hidden = !state.wallpapers_enabled || state.active?.id !== button.dataset.id;
     if (button.lastElementChild.hidden !== hidden) button.lastElementChild.hidden = hidden;
+    button.querySelector(".favorite-indicator").hidden = !favoriteIds.has(button.dataset.id);
   }
+  const empty = get("library-empty");
+  empty.hidden = matching.length > 0;
+  empty.textContent = query ? "Ничего не найдено" : "Пока нет избранных обоев";
+}
+
+function searchName(value) {
+  return value.normalize("NFC").toLocaleLowerCase("ru-RU").replaceAll("ё", "е");
 }
 
 function libraryButton(item) {
@@ -66,10 +92,14 @@ function libraryButton(item) {
   const subtitle = document.createElement("small");
   subtitle.textContent = builtIn ? "Встроенные обои" : item.format.toUpperCase();
   meta.append(title, subtitle);
+  const favorite = document.createElement("span");
+  favorite.className = "favorite-indicator";
+  favorite.setAttribute("aria-hidden", "true");
+  favorite.textContent = "★";
   const active = document.createElement("span");
   active.className = "active-indicator";
   active.title = "На рабочем столе";
-  button.append(thumbnail, meta, active);
+  button.append(thumbnail, meta, favorite, active);
   button.addEventListener("click", () => {
     if (selected?.id !== item.id) select(item);
   });
@@ -149,6 +179,12 @@ function renderControls() {
   get("pause").hidden = !live && !paused && !fullscreen;
   get("pause").textContent = paused ? "Продолжить" : "Пауза";
   get("remove").disabled = applying;
+  const favorite = get("favorite");
+  const starred = favoriteIds.has(selected.id);
+  favorite.disabled = false;
+  favorite.setAttribute("aria-pressed", String(starred));
+  favorite.textContent = starred ? "★" : "☆";
+  favorite.title = starred ? "Убрать из избранного" : "Добавить в избранное";
   get("status-dot").className = live ? "live" : paused || fullscreen ? "paused" : "";
   get("status-description").textContent = applying ? "Подключаем к рабочему столу…"
     : fullscreen ? "Автопауза в полноэкранном режиме"
@@ -169,6 +205,11 @@ window.kadr = {
     const first = !state;
     setMonitors(payload.monitors, payload.draft.monitor);
     state = payload;
+    const theme = state.theme ?? initialTheme;
+    applyTheme(theme);
+    get("theme").value = theme;
+    get("theme").disabled = false;
+    favoriteIds = new Set(state.favorites);
     managerVisible = state.window_visible;
     get("startup").checked = state.startup_enabled;
     get("startup").disabled = false;
@@ -201,6 +242,16 @@ window.kadr = {
 
 get("import").addEventListener("click", () => send("import"));
 get("remove").addEventListener("click", () => send("remove", { id: selected.id }));
+get("theme").addEventListener("change", event => send("set_theme", { theme: event.currentTarget.value }));
+get("favorite").addEventListener("click", () => send("toggle_favorite", { id: selected.id }));
+search.addEventListener("input", () => {
+  if (state) renderLibrary();
+});
+get("favorites-filter").addEventListener("click", event => {
+  favoritesOnly = !favoritesOnly;
+  event.currentTarget.setAttribute("aria-pressed", String(favoritesOnly));
+  if (state) renderLibrary();
+});
 get("monitor").addEventListener("change", renderControls);
 get("fit").addEventListener("change", () => player?.setFit(get("fit").value));
 get("audio").addEventListener("change", () => {
@@ -239,6 +290,11 @@ get("fullscreen-pause").addEventListener("change", event => {
 });
 document.addEventListener("visibilitychange", updatePreview);
 document.addEventListener("keydown", event => {
+  if (event.ctrlKey && event.code === "KeyF") {
+    event.preventDefault();
+    search.focus();
+    search.select();
+  }
   if (event.ctrlKey && event.code === "KeyO" && !event.repeat) {
     event.preventDefault();
     send("import");

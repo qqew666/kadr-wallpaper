@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeSet,
     fs::{self, File},
     io::{self, Write},
     path::{Path, PathBuf},
@@ -103,6 +104,15 @@ pub struct Active {
     pub settings: Settings,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UiTheme {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -112,6 +122,8 @@ pub struct Config {
     pub wallpapers_enabled: bool,
     pub startup_initialized: bool,
     pub pause_in_fullscreen: bool,
+    pub theme: UiTheme,
+    pub favorites: BTreeSet<Uuid>,
 }
 
 impl Default for Config {
@@ -123,11 +135,27 @@ impl Default for Config {
             wallpapers_enabled: true,
             startup_initialized: false,
             pause_in_fullscreen: true,
+            theme: UiTheme::default(),
+            favorites: BTreeSet::new(),
         }
     }
 }
 
 impl Config {
+    pub fn remove_wallpaper(&mut self, id: Uuid) -> Option<bool> {
+        let index = self
+            .library
+            .iter()
+            .position(|wallpaper| wallpaper.id == id)?;
+        self.library.remove(index);
+        self.favorites.remove(&id);
+        let was_active = self.active.as_ref().is_some_and(|active| active.id == id);
+        if was_active {
+            self.active = None;
+        }
+        Some(was_active)
+    }
+
     pub fn load(path: &Path) -> io::Result<Self> {
         let file = match File::open(path) {
             Ok(file) => file,
@@ -176,6 +204,8 @@ mod tests {
         assert!(config.wallpapers_enabled);
         assert!(!config.startup_initialized);
         assert!(config.pause_in_fullscreen);
+        assert_eq!(config.theme, UiTheme::System);
+        assert!(config.favorites.is_empty());
     }
 
     #[test]
@@ -197,15 +227,43 @@ mod tests {
         config.wallpapers_enabled = false;
         config.startup_initialized = true;
         config.pause_in_fullscreen = false;
+        config.theme = UiTheme::Light;
+        config.favorites.insert(DEMO);
         config.save(&path).unwrap();
         let off = Config::load(&path).unwrap();
         assert_eq!(off.active, config.active);
         assert!(!off.wallpapers_enabled);
         assert!(off.startup_initialized);
         assert!(!off.pause_in_fullscreen);
+        assert_eq!(off.theme, UiTheme::Light);
+        assert!(off.favorites.contains(&DEMO));
 
         config.active = None;
         config.save(&path).unwrap();
         assert!(Config::load(&path).unwrap().active.is_none());
+    }
+
+    #[test]
+    fn removing_active_wallpaper_clears_saved_selection_and_keeps_media() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("test.gif");
+        fs::write(&source, b"GIF89a").unwrap();
+        let wallpaper = Wallpaper::open(&source).unwrap();
+        let id = wallpaper.id;
+        let mut config = Config {
+            library: vec![wallpaper],
+            active: Some(Active {
+                id,
+                settings: Settings::default(),
+            }),
+            favorites: BTreeSet::from([id, DEMO]),
+            ..Config::default()
+        };
+        assert_eq!(config.remove_wallpaper(id), Some(true));
+        assert_eq!(config.remove_wallpaper(id), None);
+        assert!(config.library.is_empty());
+        assert!(config.active.is_none());
+        assert_eq!(config.favorites, BTreeSet::from([DEMO]));
+        assert_eq!(fs::read(source).unwrap(), b"GIF89a");
     }
 }

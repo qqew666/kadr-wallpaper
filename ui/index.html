@@ -15,6 +15,11 @@
         <div><strong>Кадр</strong><small>Живые обои</small></div>
       </div>
       <div class="library-heading"><h2>Библиотека</h2><span id="count">1</span></div>
+      <div class="library-tools">
+        <input id="search" type="search" placeholder="Поиск по названию" aria-label="Поиск обоев по названию">
+        <button type="button" id="favorites-filter" class="filter-button" aria-pressed="false"><span aria-hidden="true">★</span>Избранное</button>
+      </div>
+      <p id="library-empty" class="library-empty" role="status" hidden></p>
       <div id="library" class="library" aria-label="Библиотека обоев"></div>
       <div class="sidebar-footer">
         <div class="drop-note"><span class="drop-symbol" aria-hidden="true">↓</span><div><strong>Перетащите файлы</strong><small>Видео MP4 или анимации GIF</small></div></div>
@@ -27,13 +32,17 @@
           <h1>Студия обоев</h1>
           <p>Выберите фон и настройте его для своего экрана.</p>
         </div>
-        <button id="import" class="button button-secondary"><span class="plus" aria-hidden="true"></span>Импортировать</button>
+        <div class="header-actions">
+          <label class="theme-picker"><span>Тема</span><select id="theme" disabled><option value="system">Как в Windows</option><option value="light">Светлая</option><option value="dark">Тёмная</option></select></label>
+          <button id="import" class="button button-secondary"><span class="plus" aria-hidden="true"></span>Импортировать</button>
+        </div>
       </header>
 
       <section class="preview" aria-label="Предпросмотр">
         <div id="stage" class="preview-stage"></div>
         <div class="preview-shade"></div>
         <span class="preview-label"><i></i>Предпросмотр</span>
+        <button type="button" id="favorite" class="round-button favorite-button" aria-label="Избранное" title="Добавить в избранное" aria-pressed="false" disabled>☆</button>
         <div class="preview-caption">
           <div><h2 id="title">Северное сияние</h2><p id="details">Встроенные обои</p></div>
           <button id="preview-play" class="round-button" aria-label="Приостановить предпросмотр" title="Приостановить предпросмотр" disabled><span class="pause-icon" aria-hidden="true"></span></button>
@@ -43,7 +52,7 @@
       <div id="notice" class="notice" role="status" hidden></div>
 
       <section class="settings" aria-labelledby="settings-heading">
-        <div class="settings-heading"><h2 id="settings-heading">Настройки обоев</h2><button id="remove" class="text-button" hidden>Убрать из библиотеки</button></div>
+        <div class="settings-heading"><h2 id="settings-heading">Настройки обоев</h2><button id="remove" class="text-button delete-button" hidden>Удалить из библиотеки</button></div>
         <div class="settings-grid">
           <label><span>Монитор</span><select id="monitor"><option value="all">Все мониторы</option></select></label>
           <label><span>Масштабирование</span><select id="fit"><option value="cover">Заполнить экран</option><option value="contain">Уместить целиком</option><option value="fill">Растянуть</option></select></label>

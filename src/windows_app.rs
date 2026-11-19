@@ -2,7 +2,7 @@ use crate::{
     desktop::{self, BackdropWindow, Desktop, Display, FullscreenBounds},
     server::MediaServer,
     startup,
-    state::{Active, Config, DEMO, Format, Settings, Wallpaper},
+    state::{Active, Config, DEMO, Format, Settings, UiTheme, Wallpaper},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -16,7 +16,7 @@ use tao::{
     dpi::LogicalSize,
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget},
-    window::{Icon as WindowIcon, Window, WindowBuilder},
+    window::{Icon as WindowIcon, Theme, Window, WindowBuilder},
 };
 use tray_icon::{
     Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
@@ -50,6 +50,8 @@ enum Command {
     ToggleWallpapers,
     SetStartup { enabled: bool },
     SetFullscreenPause { enabled: bool },
+    SetTheme { theme: UiTheme },
+    ToggleFavorite { id: Uuid },
 }
 
 #[derive(Deserialize)]
@@ -259,6 +261,7 @@ pub fn run() -> Result<(), String> {
 
     let window = WindowBuilder::new()
         .with_title("Кадр — живые обои")
+        .with_theme(native_theme(config.theme))
         .with_inner_size(LogicalSize::new(1160, 760))
         .with_min_inner_size(LogicalSize::new(660, 510))
         .with_window_icon(WindowIcon::from_rgba(ICON.to_vec(), 32, 32).ok())
@@ -270,7 +273,15 @@ pub fn run() -> Result<(), String> {
     let ui_url = format!("{}index.html", server.base);
     let commands = proxy.clone();
     let drag = proxy.clone();
+    let boot_theme = serde_json::json!(config.theme);
+    let background_color = if window.theme() == Theme::Light {
+        (246, 244, 250, 255)
+    } else {
+        (16, 16, 21, 255)
+    };
     let web = secure_view(WebViewBuilder::new_with_web_context(&mut context), &ui_url)
+        .with_background_color(background_color)
+        .with_initialization_script(format!("window.kadrTheme = {boot_theme}"))
         .with_ipc_handler(move |request| {
             if let Ok(command) = serde_json::from_str::<Command>(request.body()) {
                 let _ = commands.send_event(AppEvent::Command(command));
@@ -448,6 +459,14 @@ fn secure_view<'a>(builder: WebViewBuilder<'a>, url: &str) -> WebViewBuilder<'a>
         .with_background_color((16, 16, 21, 255))
 }
 
+fn native_theme(theme: UiTheme) -> Option<Theme> {
+    match theme {
+        UiTheme::System => None,
+        UiTheme::Light => Some(Theme::Light),
+        UiTheme::Dark => Some(Theme::Dark),
+    }
+}
+
 impl Manager {
     fn show_window(&self) {
         self.window.set_visible(true);
@@ -577,6 +596,8 @@ impl Manager {
             "startup_enabled": self.startup_enabled,
             "pause_in_fullscreen": self.config.pause_in_fullscreen,
             "fullscreen_paused": self.fullscreen_paused(),
+            "theme": self.config.theme,
+            "favorites": self.config.favorites,
             "window_visible": self.window.is_visible(),
             "notice": self.notice,
             "select": self.select,
@@ -636,17 +657,15 @@ impl Manager {
             }
             Command::Remove { id } if id != DEMO && self.pending.is_none() => {
                 let mut config = self.config.clone();
-                config.library.retain(|item| item.id != id);
-                let was_active = config.active.as_ref().is_some_and(|active| active.id == id);
-                if was_active {
-                    config.active = None;
-                }
+                let Some(was_active) = config.remove_wallpaper(id) else {
+                    return;
+                };
                 if self.save(config) {
                     if was_active {
                         self.scene = None;
                         self.paused = false;
                     }
-                    self.notice("Файл убран из библиотеки.", false);
+                    self.notice("Обои удалены из библиотеки.", false);
                 }
             }
             Command::Pause if self.pending.is_none() && self.scene.is_some() => {
@@ -674,6 +693,23 @@ impl Manager {
                 config.pause_in_fullscreen = enabled;
                 if self.save(config) {
                     self.refresh_playback();
+                    self.render();
+                }
+            }
+            Command::SetTheme { theme } => {
+                let mut config = self.config.clone();
+                config.theme = theme;
+                if self.save(config) {
+                    self.window.set_theme(native_theme(theme));
+                    self.render();
+                }
+            }
+            Command::ToggleFavorite { id } if self.config.format(id).is_some() => {
+                let mut config = self.config.clone();
+                if !config.favorites.remove(&id) {
+                    config.favorites.insert(id);
+                }
+                if self.save(config) {
                     self.render();
                 }
             }
