@@ -1,5 +1,5 @@
 use crate::{
-    desktop::{self, BackdropWindow, Desktop, Display},
+    desktop::{self, BackdropWindow, Desktop, Display, FullscreenBounds},
     server::MediaServer,
     startup,
     state::{Active, Config, DEMO, Format, Settings, Wallpaper},
@@ -35,6 +35,7 @@ use wry::{
 
 const ICON: &[u8] = include_bytes!("../assets/tray.rgba");
 const CHECK_INTERVAL: Duration = Duration::from_secs(2);
+const FULLSCREEN_INTERVAL: Duration = Duration::from_millis(500);
 const RETRY_INTERVAL: Duration = Duration::from_secs(25);
 const LOAD_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -48,6 +49,7 @@ enum Command {
     Pause,
     ToggleWallpapers,
     SetStartup { enabled: bool },
+    SetFullscreenPause { enabled: bool },
 }
 
 #[derive(Deserialize)]
@@ -80,10 +82,39 @@ struct Item<'a> {
     bytes: u64,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Playback {
+    Hidden,
+    Frozen,
+    Playing,
+}
+
 struct Backdrop {
     web: WebView,
     window: BackdropWindow,
     ready: bool,
+    playback: Playback,
+}
+
+impl Backdrop {
+    fn set_playback(&mut self, playback: Playback) {
+        if self.playback == playback {
+            return;
+        }
+        if self.playback == Playback::Hidden {
+            self.window.show(true);
+        }
+        if (self.playback == Playback::Playing) != (playback == Playback::Playing) {
+            let playing = playback == Playback::Playing;
+            let _ = self
+                .web
+                .evaluate_script(&format!("window.kadrPlayback?.({playing})"));
+        }
+        if playback == Playback::Hidden {
+            self.window.show(false);
+        }
+        self.playback = playback;
+    }
 }
 
 struct Scene {
@@ -97,16 +128,24 @@ impl Scene {
         self.layers.iter().all(|layer| layer.window.healthy())
     }
 
-    fn play(&self, playing: bool) {
-        for layer in &self.layers {
-            if playing {
-                layer.window.show(true);
-                let _ = layer.web.evaluate_script("window.kadrPlayback?.(true)");
+    fn set_playback(&mut self, paused: bool, fullscreen: Option<FullscreenBounds>) {
+        for (display, layer) in self.displays.iter().zip(&mut self.layers) {
+            let playback = if paused {
+                Playback::Hidden
+            } else if fullscreen.is_some_and(|bounds| bounds.covers(display)) {
+                Playback::Frozen
             } else {
-                let _ = layer.web.evaluate_script("window.kadrPlayback?.(false)");
-                layer.window.show(false);
-            }
+                Playback::Playing
+            };
+            layer.set_playback(playback);
         }
+    }
+
+    fn fullscreen_paused(&self) -> usize {
+        self.layers
+            .iter()
+            .filter(|layer| layer.playback == Playback::Frozen)
+            .count()
     }
 }
 
@@ -340,6 +379,7 @@ pub fn run() -> Result<(), String> {
         generation: 0,
     };
     let mut check_at = now;
+    let mut fullscreen_at = now;
     manager.initialize_startup();
     if !background {
         manager.show_window();
@@ -353,7 +393,10 @@ pub fn run() -> Result<(), String> {
             manager.check(target);
             check_at = Instant::now() + CHECK_INTERVAL;
         }
-        *control = ControlFlow::WaitUntil(check_at);
+        if manager.watches_fullscreen() && Instant::now() >= fullscreen_at {
+            manager.check_fullscreen();
+            fullscreen_at = Instant::now() + FULLSCREEN_INTERVAL;
+        }
         match event {
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
@@ -379,10 +422,16 @@ pub fn run() -> Result<(), String> {
                     manager.pending = None;
                     manager.scene = None;
                     *control = ControlFlow::Exit;
+                    return;
                 }
             },
             _ => {}
         }
+        *control = ControlFlow::WaitUntil(if manager.watches_fullscreen() {
+            check_at.min(fullscreen_at)
+        } else {
+            check_at
+        });
     });
 }
 
@@ -441,14 +490,49 @@ impl Manager {
             "applying"
         } else if self.paused {
             "paused"
-        } else if self.scene.is_some() {
-            "running"
+        } else if let Some(scene) = &self.scene {
+            if scene.fullscreen_paused() == scene.layers.len() {
+                "fullscreen"
+            } else {
+                "running"
+            }
         } else if self.config.active.is_some() && !self.config.wallpapers_enabled {
             "disabled"
         } else if self.config.active.is_some() {
             "waiting"
         } else {
             "idle"
+        }
+    }
+
+    fn watches_fullscreen(&self) -> bool {
+        self.scene.is_some() && self.config.pause_in_fullscreen && !self.paused
+    }
+
+    fn fullscreen_bounds(&self) -> Option<FullscreenBounds> {
+        if self.config.pause_in_fullscreen && !self.paused {
+            desktop::foreground_fullscreen()
+        } else {
+            None
+        }
+    }
+
+    fn refresh_playback(&mut self) {
+        let fullscreen = self.fullscreen_bounds();
+        if let Some(scene) = &mut self.scene {
+            scene.set_playback(self.paused, fullscreen);
+        }
+    }
+
+    fn fullscreen_paused(&self) -> usize {
+        self.scene.as_ref().map_or(0, Scene::fullscreen_paused)
+    }
+
+    fn check_fullscreen(&mut self) {
+        let previously_paused = self.fullscreen_paused();
+        self.refresh_playback();
+        if self.fullscreen_paused() != previously_paused {
+            self.render();
         }
     }
 
@@ -491,6 +575,8 @@ impl Manager {
             "status": self.status(),
             "wallpapers_enabled": self.config.wallpapers_enabled,
             "startup_enabled": self.startup_enabled,
+            "pause_in_fullscreen": self.config.pause_in_fullscreen,
+            "fullscreen_paused": self.fullscreen_paused(),
             "window_visible": self.window.is_visible(),
             "notice": self.notice,
             "select": self.select,
@@ -563,12 +649,10 @@ impl Manager {
                     self.notice("Файл убран из библиотеки.", false);
                 }
             }
-            Command::Pause if self.pending.is_none() => {
-                if let Some(scene) = &self.scene {
-                    self.paused = !self.paused;
-                    scene.play(!self.paused);
-                    self.render();
-                }
+            Command::Pause if self.pending.is_none() && self.scene.is_some() => {
+                self.paused = !self.paused;
+                self.refresh_playback();
+                self.render();
             }
             Command::ToggleWallpapers if self.config.active.is_some() => {
                 let mut config = self.config.clone();
@@ -585,6 +669,14 @@ impl Manager {
                 }
             }
             Command::SetStartup { enabled } => self.set_startup(enabled),
+            Command::SetFullscreenPause { enabled } => {
+                let mut config = self.config.clone();
+                config.pause_in_fullscreen = enabled;
+                if self.save(config) {
+                    self.refresh_playback();
+                    self.render();
+                }
+            }
             _ => {}
         }
     }
@@ -710,6 +802,7 @@ impl Manager {
                 web,
                 window,
                 ready: false,
+                playback: Playback::Hidden,
             });
         }
         Ok(Scene {
@@ -771,8 +864,9 @@ impl Manager {
             }
             self.paused = false;
         }
-        pending.scene.play(!self.paused);
-        self.scene = Some(pending.scene);
+        let mut scene = pending.scene;
+        scene.set_playback(self.paused, self.fullscreen_bounds());
+        self.scene = Some(scene);
         self.render();
     }
 

@@ -143,13 +143,16 @@ function renderControls() {
 
   const live = state.status === "running";
   const paused = state.status === "paused";
+  const fullscreen = state.status === "fullscreen";
   get("wallpapers").hidden = !state.active;
   get("wallpapers").textContent = state.wallpapers_enabled ? "Выключить обои" : "Включить обои";
-  get("pause").hidden = !live && !paused;
+  get("pause").hidden = !live && !paused && !fullscreen;
   get("pause").textContent = paused ? "Продолжить" : "Пауза";
   get("remove").disabled = applying;
-  get("status-dot").className = live ? "live" : paused ? "paused" : "";
+  get("status-dot").className = live ? "live" : paused || fullscreen ? "paused" : "";
   get("status-description").textContent = applying ? "Подключаем к рабочему столу…"
+    : fullscreen ? "Автопауза в полноэкранном режиме"
+    : live && state.fullscreen_paused ? "Автопауза на части экранов"
     : live ? state.items.find(item => item.id === state.active.id)?.name ?? "Воспроизводится"
     : paused ? "Воспроизведение на паузе"
     : state.status === "disabled" ? "Живые обои выключены"
@@ -170,6 +173,9 @@ window.kadr = {
     get("startup").checked = state.startup_enabled;
     get("startup").disabled = false;
     get("startup-label").textContent = state.startup_enabled ? "Включён" : "Выключен";
+    get("fullscreen-pause").checked = state.pause_in_fullscreen;
+    get("fullscreen-pause").disabled = false;
+    get("fullscreen-pause-label").textContent = state.pause_in_fullscreen ? "Включён" : "Выключен";
     if (first) {
       get("fit").value = state.draft.fit;
       get("audio").checked = !state.draft.muted;
@@ -225,6 +231,11 @@ get("startup").addEventListener("change", event => {
   notice("");
   event.currentTarget.disabled = true;
   send("set_startup", { enabled: event.currentTarget.checked });
+});
+get("fullscreen-pause").addEventListener("change", event => {
+  notice("");
+  event.currentTarget.disabled = true;
+  send("set_fullscreen_pause", { enabled: event.currentTarget.checked });
 });
 document.addEventListener("visibilitychange", updatePreview);
 document.addEventListener("keydown", event => {

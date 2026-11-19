@@ -6,9 +6,12 @@ use std::{io, num::NonZeroIsize, ptr::null_mut};
 use tao::{event_loop::EventLoopWindowTarget, monitor::MonitorHandle};
 use windows_sys::{
     Win32::{
-        Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM},
-        Graphics::Gdi::ScreenToClient,
-        System::LibraryLoader::GetModuleHandleW,
+        Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+        Graphics::{
+            Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute},
+            Gdi::ScreenToClient,
+        },
+        System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentProcessId},
         UI::WindowsAndMessaging::*,
     },
     core::BOOL,
@@ -63,6 +66,61 @@ pub fn targets<'a>(displays: &'a [Display], choice: &str) -> Vec<&'a Display> {
             choice == "all" || (choice == "primary" && display.primary) || display.id == choice
         })
         .collect()
+}
+
+#[derive(Clone, Copy)]
+pub struct FullscreenBounds(RECT);
+
+impl FullscreenBounds {
+    pub fn covers(self, display: &Display) -> bool {
+        const EDGE_TOLERANCE: i32 = 2;
+        self.0.left <= display.x + EDGE_TOLERANCE
+            && self.0.top <= display.y + EDGE_TOLERANCE
+            && self.0.right >= display.x + display.width - EDGE_TOLERANCE
+            && self.0.bottom >= display.y + display.height - EDGE_TOLERANCE
+    }
+}
+
+pub fn foreground_fullscreen() -> Option<FullscreenBounds> {
+    unsafe {
+        let window = GetForegroundWindow();
+        if window.is_null()
+            || window == GetDesktopWindow()
+            || window == GetShellWindow()
+            || IsWindowVisible(window) == 0
+            || IsIconic(window) != 0
+            || GetWindowLongPtrW(window, GWL_STYLE) as u32 & WS_CAPTION == WS_CAPTION
+        {
+            return None;
+        }
+        let mut pid = 0;
+        GetWindowThreadProcessId(window, &mut pid);
+        if pid == 0 || pid == GetCurrentProcessId() {
+            return None;
+        }
+
+        let mut class = [0u16; 32];
+        let length = GetClassNameW(window, class.as_mut_ptr(), class.len() as i32);
+        if matches!(
+            String::from_utf16_lossy(&class[..length as usize]).as_str(),
+            "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd"
+        ) {
+            return None;
+        }
+
+        let mut bounds = RECT::default();
+        let result = DwmGetWindowAttribute(
+            window,
+            DWMWA_EXTENDED_FRAME_BOUNDS as u32,
+            (&mut bounds as *mut RECT).cast(),
+            size_of::<RECT>() as u32,
+        );
+        if result < 0 && GetWindowRect(window, &mut bounds) == 0 {
+            return None;
+        }
+        (bounds.left < bounds.right && bounds.top < bounds.bottom)
+            .then_some(FullscreenBounds(bounds))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -239,5 +297,50 @@ impl Drop for BackdropWindow {
                 DestroyWindow(self.window);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fullscreen_bounds_select_only_covered_displays() {
+        let left = Display {
+            id: "left".into(),
+            label: "Left".into(),
+            primary: false,
+            x: -1920,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        };
+        let primary = Display {
+            id: "primary".into(),
+            label: "Primary".into(),
+            primary: true,
+            x: 0,
+            ..left.clone()
+        };
+        let fullscreen = FullscreenBounds(RECT {
+            left: -1919,
+            top: 0,
+            right: 0,
+            bottom: 1080,
+        });
+        assert!(fullscreen.covers(&left));
+        assert!(!fullscreen.covers(&primary));
+
+        let work_area = FullscreenBounds(RECT {
+            bottom: 1032,
+            ..fullscreen.0
+        });
+        assert!(!work_area.covers(&left));
+        let spanned = FullscreenBounds(RECT {
+            right: 1920,
+            ..fullscreen.0
+        });
+        assert!(spanned.covers(&left));
+        assert!(spanned.covers(&primary));
     }
 }

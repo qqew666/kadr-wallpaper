@@ -111,6 +111,7 @@ pub struct Config {
     pub draft: Settings,
     pub wallpapers_enabled: bool,
     pub startup_initialized: bool,
+    pub pause_in_fullscreen: bool,
 }
 
 impl Default for Config {
@@ -121,6 +122,7 @@ impl Default for Config {
             draft: Settings::default(),
             wallpapers_enabled: true,
             startup_initialized: false,
+            pause_in_fullscreen: true,
         }
     }
 }
@@ -173,6 +175,7 @@ mod tests {
         assert_eq!(config.active, Some(active));
         assert!(config.wallpapers_enabled);
         assert!(!config.startup_initialized);
+        assert!(config.pause_in_fullscreen);
     }
 
     #[test]
@@ -193,11 +196,13 @@ mod tests {
 
         config.wallpapers_enabled = false;
         config.startup_initialized = true;
+        config.pause_in_fullscreen = false;
         config.save(&path).unwrap();
         let off = Config::load(&path).unwrap();
         assert_eq!(off.active, config.active);
         assert!(!off.wallpapers_enabled);
         assert!(off.startup_initialized);
+        assert!(!off.pause_in_fullscreen);
 
         config.active = None;
         config.save(&path).unwrap();
