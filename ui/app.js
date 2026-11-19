@@ -14,6 +14,8 @@ let previewReady = false;
 let playPreview = true;
 let managerVisible = true;
 let selectionError = "";
+let libraryKey;
+let monitorsKey;
 
 function notice(message, error = false) {
   const element = get("notice");
@@ -24,45 +26,54 @@ function notice(message, error = false) {
 
 function renderLibrary() {
   const list = get("library");
-  const focused = list.contains(document.activeElement) ? document.activeElement.dataset.id : null;
-  list.replaceChildren();
-  get("count").textContent = state.items.length;
-  for (const item of state.items) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "library-item";
-    button.dataset.id = item.id;
-    button.title = item.name;
-    button.setAttribute("aria-pressed", String(item.id === selected?.id));
-    const builtIn = item.id === demo;
-    const thumbnail = document.createElement(builtIn ? "img" : "span");
-    thumbnail.className = "thumbnail";
-    if (builtIn) {
-      thumbnail.src = "aurora.webp";
-      thumbnail.alt = "";
-    } else {
-      thumbnail.textContent = item.format.toUpperCase();
-    }
-    const meta = document.createElement("span");
-    meta.className = "item-info";
-    const title = document.createElement("strong");
-    title.textContent = item.name;
-    const subtitle = document.createElement("small");
-    subtitle.textContent = builtIn ? "Встроенные обои" : item.format.toUpperCase();
-    meta.append(title, subtitle);
-    button.append(thumbnail, meta);
-    if (state.wallpapers_enabled && state.active?.id === item.id) {
-      const active = document.createElement("span");
-      active.className = "active-indicator";
-      active.title = "На рабочем столе";
-      button.append(active);
-    }
-    button.addEventListener("click", () => {
-      if (selected?.id !== item.id) select(item);
-    });
-    list.append(button);
-    if (focused === item.id) button.focus();
+  const key = state.items.map(item => item.id).join(",");
+  if (key !== libraryKey) {
+    libraryKey = key;
+    const focused = list.contains(document.activeElement) ? document.activeElement.dataset.id : null;
+    const items = document.createDocumentFragment();
+    for (const item of state.items) items.append(libraryButton(item));
+    list.replaceChildren(items);
+    get("count").textContent = state.items.length;
+    if (focused) Array.from(list.children).find(button => button.dataset.id === focused)?.focus();
   }
+  for (const button of list.children) {
+    const pressed = String(button.dataset.id === selected?.id);
+    if (button.getAttribute("aria-pressed") !== pressed) button.setAttribute("aria-pressed", pressed);
+    const hidden = !state.wallpapers_enabled || state.active?.id !== button.dataset.id;
+    if (button.lastElementChild.hidden !== hidden) button.lastElementChild.hidden = hidden;
+  }
+}
+
+function libraryButton(item) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "library-item";
+  button.dataset.id = item.id;
+  button.title = item.name;
+  const builtIn = item.id === demo;
+  const thumbnail = document.createElement(builtIn ? "img" : "span");
+  thumbnail.className = "thumbnail";
+  if (builtIn) {
+    thumbnail.src = "aurora.webp";
+    thumbnail.alt = "";
+  } else {
+    thumbnail.textContent = item.format.toUpperCase();
+  }
+  const meta = document.createElement("span");
+  meta.className = "item-info";
+  const title = document.createElement("strong");
+  title.textContent = item.name;
+  const subtitle = document.createElement("small");
+  subtitle.textContent = builtIn ? "Встроенные обои" : item.format.toUpperCase();
+  meta.append(title, subtitle);
+  const active = document.createElement("span");
+  active.className = "active-indicator";
+  active.title = "На рабочем столе";
+  button.append(thumbnail, meta, active);
+  button.addEventListener("click", () => {
+    if (selected?.id !== item.id) select(item);
+  });
+  return button;
 }
 
 function select(item) {
@@ -102,6 +113,9 @@ function select(item) {
 }
 
 function setMonitors(list, fallback) {
+  const key = JSON.stringify(list);
+  if (monitorsKey === key) return;
+  monitorsKey = key;
   const select = get("monitor");
   const current = state ? select.value : fallback;
   select.replaceChildren(new Option("Все мониторы", "all"));

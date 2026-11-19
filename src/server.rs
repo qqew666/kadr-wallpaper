@@ -17,6 +17,7 @@ const UI: &[u8] = include_bytes!("../ui/index.html");
 const CSS: &[u8] = include_bytes!("../ui/app.css");
 const APP: &[u8] = include_bytes!("../ui/app.js");
 const PLAYER: &[u8] = include_bytes!("../ui/player.js");
+const SCALING: &[u8] = include_bytes!("../ui/scaling.js");
 const WALLPAPER: &[u8] = include_bytes!("../ui/wallpaper.html");
 const WALLPAPER_JS: &[u8] = include_bytes!("../ui/wallpaper.js");
 const AURORA: &[u8] = include_bytes!("../assets/aurora.mp4");
@@ -114,6 +115,7 @@ fn respond(
         "app.js" => Some((APP, "text/javascript; charset=utf-8")),
         "wallpaper.js" => Some((WALLPAPER_JS, "text/javascript; charset=utf-8")),
         "player.js" => Some((PLAYER, "text/javascript; charset=utf-8")),
+        "scaling.js" => Some((SCALING, "text/javascript; charset=utf-8")),
         "aurora.webp" => Some((POSTER, "image/webp")),
         _ => None,
     };
