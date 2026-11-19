@@ -1,6 +1,6 @@
 [package]
 name = "kadr-wallpaper"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 description = "MP4 and GIF live wallpapers for Windows"
@@ -27,6 +27,7 @@ windows-sys = { version = "0.60", features = [
     "Win32_System_LibraryLoader",
     "Win32_UI_WindowsAndMessaging",
 ] }
+winreg = "0.56"
 wry = "0.53"
 
 [build-dependencies]

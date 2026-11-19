@@ -14,6 +14,8 @@ permissions:
 jobs:
   build:
     runs-on: windows-2022
+    env:
+      WINDOWS_TARGET: x86_64-pc-windows-msvc
     steps:
       - name: Check out source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -24,20 +26,23 @@ jobs:
       - name: Check formatting
         run: cargo +stable fmt --all -- --check
       - name: Lint
-        run: cargo +stable clippy --locked --all-targets -- -D warnings
+        run: cargo +stable clippy --locked --target $env:WINDOWS_TARGET --all-targets -- -D warnings
       - name: Test
-        run: cargo +stable test --locked
+        run: cargo +stable test --locked --target $env:WINDOWS_TARGET
       - name: Build and package
         shell: pwsh
         run: |
-          cargo +stable build --release --locked
+          cargo +stable build --release --locked --target $env:WINDOWS_TARGET
           New-Item -ItemType Directory dist
-          Compress-Archive -Path target/release/kadr-wallpaper.exe,README.md,LICENSE,docs -DestinationPath dist/kadr-wallpaper-windows-x64.zip
-      - name: Upload ZIP
+          Copy-Item "target/$env:WINDOWS_TARGET/release/kadr-wallpaper.exe" dist/kadr-wallpaper.exe
+          Compress-Archive -Path dist/kadr-wallpaper.exe,README.md,LICENSE,docs -DestinationPath dist/kadr-wallpaper-windows-x64.zip
+      - name: Upload Windows files
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: kadr-wallpaper-windows-x64
-          path: dist/kadr-wallpaper-windows-x64.zip
+          path: |
+            dist/kadr-wallpaper.exe
+            dist/kadr-wallpaper-windows-x64.zip
           if-no-files-found: error
 
   release:
@@ -47,11 +52,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download ZIP
+      - name: Download Windows files
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: kadr-wallpaper-windows-x64
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" kadr-wallpaper-windows-x64.zip --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" kadr-wallpaper.exe kadr-wallpaper-windows-x64.zip --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes

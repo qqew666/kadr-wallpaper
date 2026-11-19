@@ -51,7 +51,7 @@ function renderLibrary() {
     subtitle.textContent = builtIn ? "Встроенные обои" : item.format.toUpperCase();
     meta.append(title, subtitle);
     button.append(thumbnail, meta);
-    if (state.active?.id === item.id) {
+    if (state.wallpapers_enabled && state.active?.id === item.id) {
       const active = document.createElement("span");
       active.className = "active-indicator";
       active.title = "На рабочем столе";
@@ -129,17 +129,17 @@ function renderControls() {
 
   const live = state.status === "running";
   const paused = state.status === "paused";
-  const active = Boolean(state.active);
-  get("stop").hidden = !active;
+  get("wallpapers").hidden = !state.active;
+  get("wallpapers").textContent = state.wallpapers_enabled ? "Выключить обои" : "Включить обои";
   get("pause").hidden = !live && !paused;
-  get("stop").disabled = applying;
   get("pause").textContent = paused ? "Продолжить" : "Пауза";
   get("remove").disabled = applying;
   get("status-dot").className = live ? "live" : paused ? "paused" : "";
   get("status-description").textContent = applying ? "Подключаем к рабочему столу…"
     : live ? state.items.find(item => item.id === state.active.id)?.name ?? "Воспроизводится"
     : paused ? "Воспроизведение на паузе"
-    : active ? "Ожидаем рабочий стол или монитор"
+    : state.status === "disabled" ? "Живые обои выключены"
+    : state.active ? "Ожидаем рабочий стол или монитор"
     : "Обои не установлены";
 }
 
@@ -152,6 +152,10 @@ window.kadr = {
     const first = !state;
     setMonitors(payload.monitors, payload.draft.monitor);
     state = payload;
+    managerVisible = state.window_visible;
+    get("startup").checked = state.startup_enabled;
+    get("startup").disabled = false;
+    get("startup-label").textContent = state.startup_enabled ? "Включён" : "Выключен";
     if (first) {
       get("fit").value = state.draft.fit;
       get("audio").checked = !state.draft.muted;
@@ -161,6 +165,7 @@ window.kadr = {
     const item = state.items.find(entry => entry.id === preferred) ?? state.items[0];
     if (selected?.id !== item.id) select(item);
     else renderLibrary();
+    updatePreview();
     renderControls();
     if (state.notice) notice(state.notice.message, state.notice.error);
     else if (selectionError) notice(selectionError, true);
@@ -198,7 +203,15 @@ applyButton.addEventListener("click", () => {
   });
 });
 get("pause").addEventListener("click", () => send("pause"));
-get("stop").addEventListener("click", () => send("stop"));
+get("wallpapers").addEventListener("click", () => {
+  notice("");
+  send("toggle_wallpapers");
+});
+get("startup").addEventListener("change", event => {
+  notice("");
+  event.currentTarget.disabled = true;
+  send("set_startup", { enabled: event.currentTarget.checked });
+});
 document.addEventListener("visibilitychange", updatePreview);
 document.addEventListener("keydown", event => {
   if (event.ctrlKey && event.code === "KeyO" && !event.repeat) {

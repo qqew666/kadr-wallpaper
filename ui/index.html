@@ -48,13 +48,14 @@
           <label><span>Монитор</span><select id="monitor"><option value="all">Все мониторы</option></select></label>
           <label><span>Масштабирование</span><select id="fit"><option value="cover">Заполнить экран</option><option value="contain">Уместить целиком</option><option value="fill">Растянуть</option></select></label>
           <label class="volume"><span>Звук обоев</span><span class="switch-frame"><input type="checkbox" id="audio" role="switch"><span class="switch" aria-hidden="true"></span><span id="sound-label">Выключен</span></span></label>
+          <label><span>Автозапуск</span><span class="switch-frame"><input type="checkbox" id="startup" role="switch" aria-label="Запускать Кадр с Windows" disabled><span class="switch" aria-hidden="true"></span><span id="startup-label">Выключен</span></span></label>
         </div>
       </section>
 
       <footer class="actions">
         <div class="desktop-status"><span id="status-dot"></span><div><strong id="status-title">Рабочий стол</strong><small id="status-description">Обои не установлены</small></div></div>
         <div class="action-buttons">
-          <button id="stop" class="text-button" hidden>Снять</button>
+          <button id="wallpapers" class="button button-secondary" hidden>Выключить обои</button>
           <button id="pause" class="button button-secondary" hidden>Пауза</button>
           <button id="apply" class="button button-primary" disabled><span class="monitor-icon" aria-hidden="true"></span>Установить обои</button>
         </div>

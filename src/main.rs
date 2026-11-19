@@ -5,6 +5,8 @@ mod desktop;
 #[cfg(any(windows, test))]
 #[cfg_attr(not(windows), allow(dead_code))]
 mod server;
+#[cfg(windows)]
+mod startup;
 #[cfg(any(windows, test))]
 #[cfg_attr(not(windows), allow(dead_code))]
 mod state;

@@ -103,12 +103,26 @@ pub struct Active {
     pub settings: Settings,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub library: Vec<Wallpaper>,
     pub active: Option<Active>,
     pub draft: Settings,
+    pub wallpapers_enabled: bool,
+    pub startup_initialized: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            library: Vec::new(),
+            active: None,
+            draft: Settings::default(),
+            wallpapers_enabled: true,
+            startup_initialized: false,
+        }
+    }
 }
 
 impl Config {
@@ -149,6 +163,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn keeps_existing_wallpapers_when_new_settings_are_missing() {
+        let active = Active {
+            id: DEMO,
+            settings: Settings::default(),
+        };
+        let old_config = serde_json::json!({ "active": active });
+        let config: Config = serde_json::from_value(old_config).unwrap();
+        assert_eq!(config.active, Some(active));
+        assert!(config.wallpapers_enabled);
+        assert!(!config.startup_initialized);
+    }
+
+    #[test]
     fn reopens_and_atomically_replaces_config() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
@@ -163,6 +190,14 @@ mod tests {
         };
         config.save(&path).unwrap();
         assert_eq!(Config::load(&path).unwrap().active, config.active);
+
+        config.wallpapers_enabled = false;
+        config.startup_initialized = true;
+        config.save(&path).unwrap();
+        let off = Config::load(&path).unwrap();
+        assert_eq!(off.active, config.active);
+        assert!(!off.wallpapers_enabled);
+        assert!(off.startup_initialized);
 
         config.active = None;
         config.save(&path).unwrap();

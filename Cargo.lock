@@ -1141,7 +1141,7 @@ dependencies = [
 
 [[package]]
 name = "kadr-wallpaper"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "embed-resource",
  "raw-window-handle",
@@ -1154,6 +1154,7 @@ dependencies = [
  "tray-icon",
  "uuid",
  "windows-sys 0.60.2",
+ "winreg",
  "wry",
 ]
 

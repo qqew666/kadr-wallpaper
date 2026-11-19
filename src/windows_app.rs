@@ -1,11 +1,13 @@
 use crate::{
     desktop::{self, BackdropWindow, Desktop, Display},
     server::MediaServer,
+    startup,
     state::{Active, Config, DEMO, Format, Settings, Wallpaper},
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    env, fs,
+    env, fs, io,
+    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     path::PathBuf,
     ptr::null_mut,
     time::{Duration, Instant},
@@ -22,8 +24,8 @@ use tray_icon::{
 };
 use uuid::Uuid;
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE},
-    System::Threading::CreateMutexW,
+    Foundation::{ERROR_ALREADY_EXISTS, GetLastError, WAIT_OBJECT_0},
+    System::Threading::{CreateEventW, CreateMutexW, SetEvent, WaitForSingleObject},
     UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW},
 };
 use wry::{
@@ -37,14 +39,15 @@ const RETRY_INTERVAL: Duration = Duration::from_secs(25);
 const LOAD_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "lowercase")]
+#[serde(tag = "kind", rename_all = "snake_case")]
 enum Command {
     Ready,
     Import,
     Apply { id: Uuid, settings: Settings },
     Remove { id: Uuid },
     Pause,
-    Stop,
+    ToggleWallpapers,
+    SetStartup { enabled: bool },
 }
 
 #[derive(Deserialize)]
@@ -122,13 +125,14 @@ struct Manager {
     window: Window,
     _tray: TrayIcon,
     tray_pause: MenuItem,
-    tray_stop: MenuItem,
+    tray_wallpapers: MenuItem,
     proxy: EventLoopProxy<AppEvent>,
     server: MediaServer,
     config: Config,
     config_path: PathBuf,
     displays: Vec<Display>,
     paused: bool,
+    startup_enabled: bool,
     ready: bool,
     notice: Option<Notice>,
     select: Option<Uuid>,
@@ -148,37 +152,55 @@ pub fn show_error(message: &str) {
     }
 }
 
-struct Instance(HANDLE);
-
-impl Instance {
-    fn acquire() -> Result<Self, String> {
-        unsafe {
-            let handle = CreateMutexW(null_mut(), 0, windows_sys::w!("Local\\KadrWallpaper"));
-            let error = GetLastError();
-            if handle.is_null() {
-                return Err(format!("Не удалось запустить Кадр. Код Windows {error}."));
-            }
-            let instance = Self(handle);
-            if error == ERROR_ALREADY_EXISTS {
-                return Err(
-                    "Кадр уже работает. Откройте его через значок в области уведомлений.".into(),
-                );
-            }
-            Ok(instance)
-        }
-    }
+struct Instance {
+    _mutex: OwnedHandle,
+    show_event: OwnedHandle,
 }
 
-impl Drop for Instance {
-    fn drop(&mut self) {
+impl Instance {
+    fn acquire(background: bool) -> io::Result<Option<Self>> {
         unsafe {
-            CloseHandle(self.0);
+            let show = CreateEventW(
+                null_mut(),
+                0,
+                0,
+                windows_sys::w!("Local\\KadrWallpaper.Show"),
+            );
+            if show.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            let show_event = OwnedHandle::from_raw_handle(show);
+            let lock = CreateMutexW(null_mut(), 0, windows_sys::w!("Local\\KadrWallpaper"));
+            let error = GetLastError();
+            if lock.is_null() {
+                return Err(io::Error::from_raw_os_error(error as i32));
+            }
+            let mutex = OwnedHandle::from_raw_handle(lock);
+            if error == ERROR_ALREADY_EXISTS {
+                if !background && SetEvent(show_event.as_raw_handle()) == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                return Ok(None);
+            }
+            Ok(Some(Self {
+                _mutex: mutex,
+                show_event,
+            }))
         }
+    }
+
+    fn show_requested(&self) -> bool {
+        unsafe { WaitForSingleObject(self.show_event.as_raw_handle(), 0) == WAIT_OBJECT_0 }
     }
 }
 
 pub fn run() -> Result<(), String> {
-    let _instance = Instance::acquire()?;
+    let background = env::args_os().skip(1).any(|arg| arg == startup::ARGUMENT);
+    let Some(instance) = Instance::acquire(background)
+        .map_err(|error| format!("Не удалось запустить Кадр. {error}"))?
+    else {
+        return Ok(());
+    };
     let data_dir = env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .ok_or("Переменная LOCALAPPDATA недоступна.")?
@@ -239,21 +261,21 @@ pub fn run() -> Result<(), String> {
     let tray_menu = Menu::new();
     let open = MenuItem::new("Открыть Кадр", true, None);
     let tray_pause = MenuItem::new("Пауза", false, None);
-    let tray_stop = MenuItem::new("Снять обои", false, None);
+    let tray_wallpapers = MenuItem::new("Выключить обои", false, None);
     let exit = MenuItem::new("Выход", true, None);
     tray_menu
         .append_items(&[
             &open,
             &tray_pause,
-            &tray_stop,
+            &tray_wallpapers,
             &PredefinedMenuItem::separator(),
             &exit,
         ])
         .map_err(|error| format!("Не удалось создать меню. {error}"))?;
-    let (open_id, pause_id, stop_id, exit_id) = (
+    let (open_id, pause_id, wallpapers_id, exit_id) = (
         open.id().clone(),
         tray_pause.id().clone(),
-        tray_stop.id().clone(),
+        tray_wallpapers.id().clone(),
         exit.id().clone(),
     );
     let menu_events = proxy.clone();
@@ -262,8 +284,8 @@ pub fn run() -> Result<(), String> {
             AppEvent::Show
         } else if event.id == pause_id {
             AppEvent::Command(Command::Pause)
-        } else if event.id == stop_id {
-            AppEvent::Command(Command::Stop)
+        } else if event.id == wallpapers_id {
+            AppEvent::Command(Command::ToggleWallpapers)
         } else if event.id == exit_id {
             AppEvent::Exit
         } else {
@@ -301,7 +323,7 @@ pub fn run() -> Result<(), String> {
         window,
         _tray: tray,
         tray_pause,
-        tray_stop,
+        tray_wallpapers,
         proxy,
         server,
         config,
@@ -310,6 +332,7 @@ pub fn run() -> Result<(), String> {
         pending: None,
         scene: None,
         paused: false,
+        startup_enabled: false,
         ready: false,
         notice: None,
         select: None,
@@ -317,10 +340,16 @@ pub fn run() -> Result<(), String> {
         generation: 0,
     };
     let mut check_at = now;
-    manager.window.set_visible(true);
+    manager.initialize_startup();
+    if !background {
+        manager.show_window();
+    }
 
     event_loop.run(move |event, target, control| {
         if Instant::now() >= check_at {
+            if instance.show_requested() {
+                manager.show_window();
+            }
             manager.check(target);
             check_at = Instant::now() + CHECK_INTERVAL;
         }
@@ -345,12 +374,7 @@ pub fn run() -> Result<(), String> {
                         .web
                         .evaluate_script(&format!("window.kadr?.drag({drag})"));
                 }
-                AppEvent::Show => {
-                    manager.window.set_visible(true);
-                    manager.window.set_minimized(false);
-                    manager.window.set_focus();
-                    let _ = manager.web.evaluate_script("window.kadr?.visible(true)");
-                }
+                AppEvent::Show => manager.show_window(),
                 AppEvent::Exit => {
                     manager.pending = None;
                     manager.scene = None;
@@ -376,6 +400,42 @@ fn secure_view<'a>(builder: WebViewBuilder<'a>, url: &str) -> WebViewBuilder<'a>
 }
 
 impl Manager {
+    fn show_window(&self) {
+        self.window.set_visible(true);
+        self.window.set_minimized(false);
+        self.window.set_focus();
+        let _ = self.web.evaluate_script("window.kadr?.visible(true)");
+    }
+
+    fn initialize_startup(&mut self) {
+        match startup::is_enabled() {
+            Ok(enabled) => {
+                self.startup_enabled = enabled;
+                if enabled || !self.config.startup_initialized {
+                    self.set_startup(true);
+                }
+            }
+            Err(error) => self.notice(format!("Не удалось прочитать автозапуск. {error}"), true),
+        }
+    }
+
+    fn set_startup(&mut self, enabled: bool) {
+        if !self.config.startup_initialized {
+            let mut config = self.config.clone();
+            config.startup_initialized = true;
+            if !self.save(config) {
+                return;
+            }
+        }
+        match startup::set_enabled(enabled) {
+            Ok(()) => {
+                self.startup_enabled = enabled;
+                self.render();
+            }
+            Err(error) => self.notice(format!("Не удалось настроить автозапуск. {error}"), true),
+        }
+    }
+
     fn status(&self) -> &'static str {
         if self.pending.is_some() {
             "applying"
@@ -383,6 +443,8 @@ impl Manager {
             "paused"
         } else if self.scene.is_some() {
             "running"
+        } else if self.config.active.is_some() && !self.config.wallpapers_enabled {
+            "disabled"
         } else if self.config.active.is_some() {
             "waiting"
         } else {
@@ -398,8 +460,14 @@ impl Manager {
         } else {
             "Пауза"
         });
-        self.tray_stop
-            .set_enabled(self.config.active.is_some() && self.pending.is_none());
+        self.tray_wallpapers
+            .set_enabled(self.config.active.is_some());
+        self.tray_wallpapers
+            .set_text(if self.config.wallpapers_enabled {
+                "Выключить обои"
+            } else {
+                "Включить обои"
+            });
         if !self.ready {
             return;
         }
@@ -421,6 +489,9 @@ impl Manager {
             "active": self.config.active,
             "draft": self.config.draft,
             "status": self.status(),
+            "wallpapers_enabled": self.config.wallpapers_enabled,
+            "startup_enabled": self.startup_enabled,
+            "window_visible": self.window.is_visible(),
             "notice": self.notice,
             "select": self.select,
         });
@@ -499,15 +570,21 @@ impl Manager {
                     self.render();
                 }
             }
-            Command::Stop if self.pending.is_none() => {
+            Command::ToggleWallpapers if self.config.active.is_some() => {
                 let mut config = self.config.clone();
-                config.active = None;
+                config.wallpapers_enabled = !config.wallpapers_enabled;
                 if self.save(config) {
-                    self.scene = None;
-                    self.paused = false;
+                    if self.config.wallpapers_enabled {
+                        self.retry_at = Instant::now();
+                    } else {
+                        self.pending = None;
+                        self.scene = None;
+                        self.paused = false;
+                    }
                     self.render();
                 }
             }
+            Command::SetStartup { enabled } => self.set_startup(enabled),
             _ => {}
         }
     }
@@ -688,6 +765,7 @@ impl Manager {
             let mut config = self.config.clone();
             config.draft = pending.active.settings.clone();
             config.active = Some(pending.active);
+            config.wallpapers_enabled = true;
             if !self.save(config) {
                 return;
             }
@@ -720,6 +798,7 @@ impl Manager {
             self.render();
         }
         if let Some(active) = self.config.active.clone()
+            && self.config.wallpapers_enabled
             && self.pending.is_none()
             && !self.paused
             && (changed || Instant::now() >= self.retry_at)
