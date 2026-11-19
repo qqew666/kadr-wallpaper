@@ -3,6 +3,7 @@ use crate::{
     server::MediaServer,
     startup,
     state::{Active, Config, DEMO, Format, Settings, UiTheme, Wallpaper},
+    updates,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -10,6 +11,7 @@ use std::{
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     path::PathBuf,
     ptr::null_mut,
+    thread,
     time::{Duration, Instant},
 };
 use tao::{
@@ -52,6 +54,10 @@ enum Command {
     SetFullscreenPause { enabled: bool },
     SetTheme { theme: UiTheme },
     ToggleFavorite { id: Uuid },
+    CheckUpdates,
+    DownloadUpdate,
+    ApplyUpdate,
+    SetAutoUpdate { enabled: bool },
 }
 
 #[derive(Deserialize)]
@@ -68,6 +74,8 @@ enum AppEvent {
     Drag(bool),
     Show,
     Exit,
+    UpdateChecked(Result<Option<updates::Release>, String>),
+    UpdateDownloaded(Result<updates::Package, String>),
 }
 
 #[derive(Serialize)]
@@ -158,6 +166,31 @@ struct Pending {
     deadline: Instant,
 }
 
+enum UpdateStatus {
+    Idle,
+    Checking,
+    Current,
+    Available(updates::Release),
+    Downloading(String),
+    Ready(updates::Package),
+    Error(String),
+}
+
+impl UpdateStatus {
+    fn snapshot(&self) -> serde_json::Value {
+        let (status, version, message) = match self {
+            Self::Idle => ("idle", None, None),
+            Self::Checking => ("checking", None, None),
+            Self::Current => ("current", None, None),
+            Self::Available(release) => ("available", Some(release.version.to_string()), None),
+            Self::Downloading(version) => ("downloading", Some(version.clone()), None),
+            Self::Ready(package) => ("ready", Some(package.release.version.to_string()), None),
+            Self::Error(message) => ("error", None, Some(message)),
+        };
+        serde_json::json!({ "status": status, "version": version, "message": message })
+    }
+}
+
 struct Manager {
     // Drop WebView controllers before disposing of their native host windows.
     pending: Option<Pending>,
@@ -179,6 +212,7 @@ struct Manager {
     select: Option<Uuid>,
     retry_at: Instant,
     generation: u64,
+    update: UpdateStatus,
 }
 
 pub fn show_error(message: &str) {
@@ -388,10 +422,15 @@ pub fn run() -> Result<(), String> {
         select: None,
         retry_at: now,
         generation: 0,
+        update: UpdateStatus::Idle,
     };
     let mut check_at = now;
     let mut fullscreen_at = now;
     manager.initialize_startup();
+    thread::spawn(|| {
+        thread::sleep(Duration::from_secs(2));
+        updates::clean_installed();
+    });
     if !background {
         manager.show_window();
     }
@@ -418,6 +457,12 @@ pub fn run() -> Result<(), String> {
                 manager.window.set_visible(false);
             }
             Event::UserEvent(event) => match event {
+                AppEvent::Command(Command::ApplyUpdate) => {
+                    if manager.apply_update(updates::Mode::Foreground) {
+                        *control = ControlFlow::Exit;
+                        return;
+                    }
+                }
                 AppEvent::Command(command) => manager.command(command),
                 AppEvent::Player(generation, index, event) => {
                     manager.handle_player(generation, index, event)
@@ -431,12 +476,27 @@ pub fn run() -> Result<(), String> {
                 AppEvent::Show => manager.show_window(),
                 AppEvent::Exit => {
                     manager.pending = None;
+                    if manager.config.auto_update {
+                        manager.apply_update(updates::Mode::Exit);
+                    }
                     manager.scene = None;
                     *control = ControlFlow::Exit;
                     return;
                 }
+                AppEvent::UpdateChecked(result) => manager.update_checked(result),
+                AppEvent::UpdateDownloaded(result) => {
+                    manager.update = match result {
+                        Ok(package) => UpdateStatus::Ready(package),
+                        Err(message) => UpdateStatus::Error(message),
+                    };
+                    manager.render();
+                }
             },
             _ => {}
+        }
+        if manager.can_apply_update() && manager.apply_update(updates::Mode::Background) {
+            *control = ControlFlow::Exit;
+            return;
         }
         *control = ControlFlow::WaitUntil(if manager.watches_fullscreen() {
             check_at.min(fullscreen_at)
@@ -598,6 +658,9 @@ impl Manager {
             "fullscreen_paused": self.fullscreen_paused(),
             "theme": self.config.theme,
             "favorites": self.config.favorites,
+            "app_version": updates::CURRENT,
+            "auto_update": self.config.auto_update,
+            "update": self.update.snapshot(),
             "window_visible": self.window.is_visible(),
             "notice": self.notice,
             "select": self.select,
@@ -713,7 +776,115 @@ impl Manager {
                     self.render();
                 }
             }
+            Command::CheckUpdates => self.check_updates(true),
+            Command::DownloadUpdate => self.download_update(),
+            Command::SetAutoUpdate { enabled } => {
+                let mut config = self.config.clone();
+                config.auto_update = enabled;
+                if self.save(config) {
+                    if enabled && matches!(self.update, UpdateStatus::Available(_)) {
+                        self.download_update();
+                    } else {
+                        self.render();
+                    }
+                }
+            }
             _ => {}
+        }
+    }
+
+    fn check_updates(&mut self, manual: bool) {
+        if matches!(
+            self.update,
+            UpdateStatus::Checking | UpdateStatus::Downloading(_) | UpdateStatus::Ready(_)
+        ) {
+            return;
+        }
+        let now = updates::now();
+        if !manual
+            && (!self.config.auto_update || !updates::check_due(self.config.last_update_check, now))
+        {
+            return;
+        }
+        let mut config = self.config.clone();
+        config.last_update_check = now;
+        if !self.save(config) {
+            self.config.last_update_check = now;
+            return;
+        }
+        self.update = UpdateStatus::Checking;
+        let proxy = self.proxy.clone();
+        if let Err(error) = thread::Builder::new()
+            .name("check-update".into())
+            .spawn(move || {
+                let _ = proxy.send_event(AppEvent::UpdateChecked(updates::check()));
+            })
+        {
+            self.update = UpdateStatus::Error(format!("Не удалось запустить проверку. {error}"));
+        }
+        self.render();
+    }
+
+    fn update_checked(&mut self, result: Result<Option<updates::Release>, String>) {
+        self.update = match result {
+            Ok(Some(release)) => UpdateStatus::Available(release),
+            Ok(None) => UpdateStatus::Current,
+            Err(message) => UpdateStatus::Error(message),
+        };
+        if self.config.auto_update && matches!(self.update, UpdateStatus::Available(_)) {
+            self.download_update();
+        } else {
+            self.render();
+        }
+    }
+
+    fn download_update(&mut self) {
+        let status = std::mem::replace(&mut self.update, UpdateStatus::Idle);
+        let UpdateStatus::Available(release) = status else {
+            self.update = status;
+            return;
+        };
+        self.update = UpdateStatus::Downloading(release.version.to_string());
+        let proxy = self.proxy.clone();
+        if let Err(error) = thread::Builder::new()
+            .name("download-update".into())
+            .spawn(move || {
+                let _ = proxy.send_event(AppEvent::UpdateDownloaded(updates::download(release)));
+            })
+        {
+            self.update = UpdateStatus::Error(format!("Не удалось запустить загрузку. {error}"));
+        }
+        self.render();
+    }
+
+    fn can_apply_update(&self) -> bool {
+        self.config.auto_update
+            && self.pending.is_none()
+            && matches!(self.update, UpdateStatus::Ready(_))
+            && !self.window.is_visible()
+            && !desktop::foreground_fullscreen()
+                .is_some_and(|bounds| self.displays.iter().any(|display| bounds.covers(display)))
+    }
+
+    fn apply_update(&mut self, mode: updates::Mode) -> bool {
+        if self.pending.is_some() {
+            return false;
+        }
+        let status = std::mem::replace(&mut self.update, UpdateStatus::Idle);
+        let UpdateStatus::Ready(package) = status else {
+            self.update = status;
+            return false;
+        };
+        match package.launch(mode) {
+            Ok(()) => {
+                self.scene = None;
+                true
+            }
+            Err(message) => {
+                self.update = UpdateStatus::Error(message);
+                self.render();
+                false
+            }
         }
     }
 
@@ -907,6 +1078,7 @@ impl Manager {
     }
 
     fn check(&mut self, target: &EventLoopWindowTarget<AppEvent>) {
+        self.check_updates(false);
         let displays = desktop::displays(target);
         let changed = displays != self.displays;
         self.displays = displays;

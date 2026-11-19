@@ -124,6 +124,8 @@ pub struct Config {
     pub pause_in_fullscreen: bool,
     pub theme: UiTheme,
     pub favorites: BTreeSet<Uuid>,
+    pub auto_update: bool,
+    pub last_update_check: u64,
 }
 
 impl Default for Config {
@@ -137,6 +139,8 @@ impl Default for Config {
             pause_in_fullscreen: true,
             theme: UiTheme::default(),
             favorites: BTreeSet::new(),
+            auto_update: true,
+            last_update_check: 0,
         }
     }
 }
@@ -206,6 +210,8 @@ mod tests {
         assert!(config.pause_in_fullscreen);
         assert_eq!(config.theme, UiTheme::System);
         assert!(config.favorites.is_empty());
+        assert!(config.auto_update);
+        assert_eq!(config.last_update_check, 0);
     }
 
     #[test]

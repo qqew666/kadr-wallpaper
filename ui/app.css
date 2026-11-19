@@ -210,6 +210,32 @@ small { display: block; }
 .item-info small { font-size: 11px; color: var(--muted); margin-top: 4px; }
 .active-indicator { flex: 0 0 6px; height: 6px; border-radius: 50%; background: var(--live); }
 .sidebar-footer { margin-top: auto; padding-top: 18px; }
+.updates {
+  margin-bottom: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+.updates summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px;
+  cursor: pointer;
+  color: var(--light-muted);
+  font-size: 11px;
+  font-weight: 640;
+  list-style: none;
+}
+.updates summary::-webkit-details-marker { display: none; }
+.updates summary::before { content: "›"; color: var(--accent); font-size: 15px; }
+.updates[open] summary::before { rotate: 90deg; }
+.updates summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.updates summary small { margin-left: auto; color: var(--muted); font-size: 10px; }
+.update-panel { display: grid; gap: 7px; padding: 0 8px 8px; }
+.update-panel p { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.update-panel p.error { color: var(--error-text); }
+.update-panel .button { width: 100%; min-height: 31px; padding: 5px; font-size: 11px; white-space: normal; }
 .drop-note {
   display: flex;
   align-items: center;
@@ -400,7 +426,9 @@ input:checked + .switch::after { transform: translateX(13px); background: var(--
   .shell { display: block; }
   .sidebar { position: static; height: auto; border-right: 0; padding: 13px 17px; }
   .brand { margin: 0 0 11px; }
-  .library-heading, .sidebar-footer { display: none; }
+  .library-heading, .sidebar-footer .drop-note { display: none; }
+  .sidebar-footer { padding-top: 8px; }
+  .updates { margin-bottom: 0; }
   .library-tools { grid-template-columns: minmax(0, 1fr) auto; }
   .library { flex-direction: row; }
   .library-item { width: 162px; }

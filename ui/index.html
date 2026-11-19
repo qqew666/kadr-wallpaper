@@ -22,6 +22,19 @@
       <p id="library-empty" class="library-empty" role="status" hidden></p>
       <div id="library" class="library" aria-label="Библиотека обоев"></div>
       <div class="sidebar-footer">
+        <details class="updates" id="updates">
+          <summary><span>Обновления</span><small id="app-version"></small></summary>
+          <div class="update-panel">
+            <label class="switch-frame">
+              <input type="checkbox" id="auto-update" role="switch" disabled>
+              <span class="switch" aria-hidden="true"></span>
+              <span>Автообновление</span>
+            </label>
+            <p id="update-message" role="status">Проверка релизов GitHub</p>
+            <button type="button" id="check-updates" class="button button-secondary" disabled>Проверить обновления</button>
+            <button type="button" id="update-action" class="button button-primary" hidden>Скачать</button>
+          </div>
+        </details>
         <div class="drop-note"><span class="drop-symbol" aria-hidden="true">↓</span><div><strong>Перетащите файлы</strong><small>Видео MP4 или анимации GIF</small></div></div>
       </div>
     </aside>

@@ -36,6 +36,38 @@ jobs:
           New-Item -ItemType Directory dist
           Copy-Item "target/$env:WINDOWS_TARGET/release/kadr-wallpaper.exe" dist/kadr-wallpaper.exe
           Compress-Archive -Path dist/kadr-wallpaper.exe,README.md,LICENSE,docs -DestinationPath dist/kadr-wallpaper-windows-x64.zip
+      - name: Test packaged updater
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP ([Guid]::NewGuid().ToString("N"))
+          $stage = Join-Path $root ".kadr-update-smoke"
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          try {
+            $target = Join-Path $root "kadr-wallpaper.exe"
+            $helper = Join-Path $stage "kadr-updater.exe"
+            $next = Join-Path $stage "next.exe"
+            foreach ($path in @($target, $helper, $next)) {
+              Copy-Item "dist/kadr-wallpaper.exe" $path
+            }
+            $oldHash = (Get-FileHash -Path $target).Hash
+            $stream = [IO.File]::Open($next, [IO.FileMode]::Append)
+            try { $stream.WriteByte(66) } finally { $stream.Dispose() }
+            $newHash = (Get-FileHash -Path $next).Hash
+            $arguments = @("--apply-kadr-update", "4294967295", "kadr-wallpaper.exe", (Get-Item $next).Length, $newHash, "exit")
+            $installer = Start-Process -FilePath $helper -ArgumentList $arguments -PassThru
+            if (!$installer.WaitForExit(35000)) {
+              $installer.Kill()
+              throw "The packaged updater did not exit."
+            }
+            if ($installer.ExitCode -ne 0 -or (Get-FileHash -Path $target).Hash -ne $newHash) {
+              throw "The packaged updater did not install the verified candidate."
+            }
+            if ((Get-FileHash -Path (Join-Path $stage "previous.exe")).Hash -ne $oldHash) {
+              throw "The packaged updater did not retain the previous executable."
+            }
+          } finally {
+            Remove-Item -LiteralPath $root -Recurse -Force
+          }
       - name: Upload Windows files
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

@@ -200,6 +200,29 @@ function updatePreview() {
   player?.setPlaying(playPreview && managerVisible && !document.hidden);
 }
 
+function renderUpdates() {
+  const info = state.update ?? { status: "idle" };
+  const labels = {
+    idle: "Проверка релизов GitHub",
+    checking: "Проверяем обновления…",
+    current: "Установлена последняя версия",
+    available: `Доступна версия ${info.version}`,
+    downloading: `Скачиваем версию ${info.version}…`,
+    ready: `Версия ${info.version} готова к установке`,
+    error: info.message,
+  };
+  get("app-version").textContent = state.app_version ? `v${state.app_version}` : "";
+  get("update-message").textContent = labels[info.status];
+  get("update-message").classList.toggle("error", info.status === "error");
+  get("auto-update").checked = Boolean(state.auto_update);
+  get("auto-update").disabled = false;
+  get("check-updates").disabled = ["checking", "downloading", "ready"].includes(info.status);
+  const action = get("update-action");
+  action.hidden = info.status !== "available" && info.status !== "ready";
+  action.disabled = info.status === "ready" && state.status === "applying";
+  action.textContent = info.status === "ready" ? "Установить и перезапустить" : "Скачать обновление";
+}
+
 window.kadr = {
   render(payload) {
     const first = !state;
@@ -228,6 +251,7 @@ window.kadr = {
     else renderLibrary();
     updatePreview();
     renderControls();
+    renderUpdates();
     if (state.notice) notice(state.notice.message, state.notice.error);
     else if (selectionError) notice(selectionError, true);
   },
@@ -244,6 +268,14 @@ get("import").addEventListener("click", () => send("import"));
 get("remove").addEventListener("click", () => send("remove", { id: selected.id }));
 get("theme").addEventListener("change", event => send("set_theme", { theme: event.currentTarget.value }));
 get("favorite").addEventListener("click", () => send("toggle_favorite", { id: selected.id }));
+get("check-updates").addEventListener("click", () => send("check_updates"));
+get("auto-update").addEventListener("change", event => {
+  event.currentTarget.disabled = true;
+  send("set_auto_update", { enabled: event.currentTarget.checked });
+});
+get("update-action").addEventListener("click", () => {
+  send(state.update?.status === "ready" ? "apply_update" : "download_update");
+});
 search.addEventListener("input", () => {
   if (state) renderLibrary();
 });
