@@ -99,12 +99,14 @@ jobs:
             if ((Test-Path $next) -or (Get-ChildItem -Path $appDir -Directory -Force)) {
               throw "Updating left a staging directory next to the app or an unused download."
             }
+            Write-Host "Setup, application shutdown, and replacement without a staging folder passed."
 
             $remove = Start-Process -FilePath $uninstaller -ArgumentList $options -PassThru -Wait
             if ($remove.ExitCode -ne 0 -or (Test-Path $target) -or
-                (Get-ItemPropertyValue -Path $runKey -Name KadrWallpaper -ErrorAction SilentlyContinue)) {
+                ((Get-Item -LiteralPath $runKey).GetValueNames() -contains "KadrWallpaper")) {
               throw "Uninstall did not remove the application and its startup entry."
             }
+            Write-Host "Uninstall removed the application and its autostart entry."
           } finally {
             foreach ($process in @($app, $updater)) {
               if ($process -and !$process.HasExited) { $process.Kill(); $process.WaitForExit() }

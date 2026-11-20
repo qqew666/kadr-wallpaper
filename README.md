@@ -43,7 +43,7 @@ cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets -- -D warnin
 cargo test --locked --target x86_64-pc-windows-msvc
 ```
 
-GitHub Actions собирает обычный EXE, ZIP и установщик с помощью Inno Setup 6. Теги вида `v0.7.0` публикуют все три файла в Releases.
+GitHub Actions собирает обычный EXE, ZIP и установщик с помощью Inno Setup 6. Теги вида `v0.7.1` публикуют все три файла в Releases.
 
 ## Как устроено
 
