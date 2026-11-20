@@ -18,6 +18,7 @@ use tao::{
     dpi::LogicalSize,
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget},
+    platform::run_return::EventLoopExtRunReturn,
     window::{Icon as WindowIcon, Theme, Window, WindowBuilder},
 };
 use tray_icon::{
@@ -75,7 +76,7 @@ enum AppEvent {
     Show,
     Exit,
     UpdateChecked(Result<Option<updates::Release>, String>),
-    UpdateDownloaded(Result<updates::Package, String>),
+    UpdateDownloaded(Result<updates::Package, (updates::Release, String)>),
 }
 
 #[derive(Serialize)]
@@ -170,9 +171,9 @@ enum UpdateStatus {
     Idle,
     Checking,
     Current,
-    Available(updates::Release),
+    Available(updates::Release, Option<String>),
     Downloading(String),
-    Ready(updates::Package),
+    Ready(updates::Package, Option<String>),
     Error(String),
 }
 
@@ -182,9 +183,17 @@ impl UpdateStatus {
             Self::Idle => ("idle", None, None),
             Self::Checking => ("checking", None, None),
             Self::Current => ("current", None, None),
-            Self::Available(release) => ("available", Some(release.version.to_string()), None),
+            Self::Available(release, message) => (
+                "available",
+                Some(release.version.to_string()),
+                message.as_ref(),
+            ),
             Self::Downloading(version) => ("downloading", Some(version.clone()), None),
-            Self::Ready(package) => ("ready", Some(package.release.version.to_string()), None),
+            Self::Ready(package, message) => (
+                "ready",
+                Some(package.release.version.to_string()),
+                message.as_ref(),
+            ),
             Self::Error(message) => ("error", None, Some(message)),
         };
         serde_json::json!({ "status": status, "version": version, "message": message })
@@ -290,7 +299,7 @@ pub fn run() -> Result<(), String> {
     })?;
     let server = MediaServer::start(&config)
         .map_err(|error| format!("Не удалось запустить локальное воспроизведение. {error}"))?;
-    let event_loop = EventLoopBuilder::<AppEvent>::with_user_event().build();
+    let mut event_loop = EventLoopBuilder::<AppEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
     let window = WindowBuilder::new()
@@ -435,28 +444,18 @@ pub fn run() -> Result<(), String> {
         manager.show_window();
     }
 
-    event_loop.run(move |event, target, control| {
-        if Instant::now() >= check_at {
-            if instance.show_requested() {
-                manager.show_window();
-            }
-            manager.check(target);
-            check_at = Instant::now() + CHECK_INTERVAL;
-        }
-        if manager.watches_fullscreen() && Instant::now() >= fullscreen_at {
-            manager.check_fullscreen();
-            fullscreen_at = Instant::now() + FULLSCREEN_INTERVAL;
-        }
-        match event {
+    let exit_code = event_loop.run_return(|event, target, control| {
+        let event = match event {
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
                 window_id,
                 ..
-            } if window_id == manager.window.id() => {
-                let _ = manager.web.evaluate_script("window.kadr?.visible(false)");
-                manager.window.set_visible(false);
-            }
-            Event::UserEvent(event) => match event {
+            } if window_id == manager.window.id() => Event::UserEvent(AppEvent::Exit),
+            Event::LoopDestroyed => return,
+            event => event,
+        };
+        if let Event::UserEvent(event) = event {
+            match event {
                 AppEvent::Command(Command::ApplyUpdate) => {
                     if manager.apply_update(updates::Mode::Foreground) {
                         *control = ControlFlow::Exit;
@@ -486,13 +485,23 @@ pub fn run() -> Result<(), String> {
                 AppEvent::UpdateChecked(result) => manager.update_checked(result),
                 AppEvent::UpdateDownloaded(result) => {
                     manager.update = match result {
-                        Ok(package) => UpdateStatus::Ready(package),
-                        Err(message) => UpdateStatus::Error(message),
+                        Ok(package) => UpdateStatus::Ready(package, None),
+                        Err((release, message)) => UpdateStatus::Available(release, Some(message)),
                     };
                     manager.render();
                 }
-            },
-            _ => {}
+            }
+        }
+        if Instant::now() >= check_at {
+            if instance.show_requested() {
+                manager.show_window();
+            }
+            manager.check(target);
+            check_at = Instant::now() + CHECK_INTERVAL;
+        }
+        if manager.watches_fullscreen() && Instant::now() >= fullscreen_at {
+            manager.check_fullscreen();
+            fullscreen_at = Instant::now() + FULLSCREEN_INTERVAL;
         }
         if manager.can_apply_update() && manager.apply_update(updates::Mode::Background) {
             *control = ControlFlow::Exit;
@@ -504,6 +513,11 @@ pub fn run() -> Result<(), String> {
             check_at
         });
     });
+    drop(manager);
+    if exit_code != 0 {
+        return Err(format!("Кадр завершился с кодом {exit_code}."));
+    }
+    Ok(())
 }
 
 fn secure_view<'a>(builder: WebViewBuilder<'a>, url: &str) -> WebViewBuilder<'a> {
@@ -782,7 +796,7 @@ impl Manager {
                 let mut config = self.config.clone();
                 config.auto_update = enabled;
                 if self.save(config) {
-                    if enabled && matches!(self.update, UpdateStatus::Available(_)) {
+                    if enabled && matches!(self.update, UpdateStatus::Available(..)) {
                         self.download_update();
                     } else {
                         self.render();
@@ -796,7 +810,7 @@ impl Manager {
     fn check_updates(&mut self, manual: bool) {
         if matches!(
             self.update,
-            UpdateStatus::Checking | UpdateStatus::Downloading(_) | UpdateStatus::Ready(_)
+            UpdateStatus::Checking | UpdateStatus::Downloading(_) | UpdateStatus::Ready(..)
         ) {
             return;
         }
@@ -806,12 +820,8 @@ impl Manager {
         {
             return;
         }
-        let mut config = self.config.clone();
-        config.last_update_check = now;
-        if !self.save(config) {
-            self.config.last_update_check = now;
-            return;
-        }
+        self.config.last_update_check = now;
+        let _ = self.config.save(&self.config_path);
         self.update = UpdateStatus::Checking;
         let proxy = self.proxy.clone();
         if let Err(error) = thread::Builder::new()
@@ -827,11 +837,11 @@ impl Manager {
 
     fn update_checked(&mut self, result: Result<Option<updates::Release>, String>) {
         self.update = match result {
-            Ok(Some(release)) => UpdateStatus::Available(release),
+            Ok(Some(release)) => UpdateStatus::Available(release, None),
             Ok(None) => UpdateStatus::Current,
             Err(message) => UpdateStatus::Error(message),
         };
-        if self.config.auto_update && matches!(self.update, UpdateStatus::Available(_)) {
+        if self.config.auto_update && matches!(self.update, UpdateStatus::Available(..)) {
             self.download_update();
         } else {
             self.render();
@@ -840,16 +850,18 @@ impl Manager {
 
     fn download_update(&mut self) {
         let status = std::mem::replace(&mut self.update, UpdateStatus::Idle);
-        let UpdateStatus::Available(release) = status else {
+        let UpdateStatus::Available(release, _) = status else {
             self.update = status;
             return;
         };
         self.update = UpdateStatus::Downloading(release.version.to_string());
         let proxy = self.proxy.clone();
+        let requested = release.clone();
         if let Err(error) = thread::Builder::new()
             .name("download-update".into())
             .spawn(move || {
-                let _ = proxy.send_event(AppEvent::UpdateDownloaded(updates::download(release)));
+                let result = updates::download(requested).map_err(|message| (release, message));
+                let _ = proxy.send_event(AppEvent::UpdateDownloaded(result));
             })
         {
             self.update = UpdateStatus::Error(format!("Не удалось запустить загрузку. {error}"));
@@ -860,7 +872,7 @@ impl Manager {
     fn can_apply_update(&self) -> bool {
         self.config.auto_update
             && self.pending.is_none()
-            && matches!(self.update, UpdateStatus::Ready(_))
+            && matches!(self.update, UpdateStatus::Ready(_, None))
             && !self.window.is_visible()
             && !desktop::foreground_fullscreen()
                 .is_some_and(|bounds| self.displays.iter().any(|display| bounds.covers(display)))
@@ -871,7 +883,7 @@ impl Manager {
             return false;
         }
         let status = std::mem::replace(&mut self.update, UpdateStatus::Idle);
-        let UpdateStatus::Ready(package) = status else {
+        let UpdateStatus::Ready(mut package, _) = status else {
             self.update = status;
             return false;
         };
@@ -881,7 +893,7 @@ impl Manager {
                 true
             }
             Err(message) => {
-                self.update = UpdateStatus::Error(message);
+                self.update = UpdateStatus::Ready(package, Some(message));
                 self.render();
                 false
             }

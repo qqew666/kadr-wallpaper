@@ -36,37 +36,80 @@ jobs:
           New-Item -ItemType Directory dist
           Copy-Item "target/$env:WINDOWS_TARGET/release/kadr-wallpaper.exe" dist/kadr-wallpaper.exe
           Compress-Archive -Path dist/kadr-wallpaper.exe,README.md,LICENSE,docs -DestinationPath dist/kadr-wallpaper-windows-x64.zip
-      - name: Test packaged updater
+      - name: Build Setup.exe
         shell: pwsh
         run: |
-          $root = Join-Path $env:RUNNER_TEMP ([Guid]::NewGuid().ToString("N"))
-          $stage = Join-Path $root ".kadr-update-smoke"
-          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          $version = (cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          $iscc = @(${env:ProgramFiles(x86)}, $env:ProgramFiles) |
+            ForEach-Object { Join-Path $_ "Inno Setup 6/ISCC.exe" } |
+            Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (!$iscc) { throw "Inno Setup 6 compiler was not found." }
+          & $iscc "/DAppVersion=$version" "installer/kadr.iss"
+      - name: Test installation, window close, and packaged updater
+        shell: pwsh
+        run: |
+          $appDir = Join-Path $env:LOCALAPPDATA "Programs/KadrWallpaper"
+          $target = Join-Path $appDir "kadr-wallpaper.exe"
+          $uninstaller = Join-Path $appDir "unins000.exe"
+          $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+          $temp = [IO.Path]::GetTempPath()
+          $id = [Guid]::NewGuid().ToString("N").Substring(0, 12)
+          $helper = Join-Path $temp "kadr-update-$id.exe"
+          $next = Join-Path $temp "kadr-update-$id.download"
+          $options = @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-")
+          $app = $null
+          $updater = $null
           try {
-            $target = Join-Path $root "kadr-wallpaper.exe"
-            $helper = Join-Path $stage "kadr-updater.exe"
-            $next = Join-Path $stage "next.exe"
-            foreach ($path in @($target, $helper, $next)) {
-              Copy-Item "dist/kadr-wallpaper.exe" $path
+            $setup = Start-Process -FilePath "dist/Kadr-Setup.exe" -ArgumentList $options -PassThru -Wait
+            if ($setup.ExitCode -ne 0 -or !(Test-Path $target) -or !(Test-Path $uninstaller)) {
+              throw "Setup did not install the expected files."
             }
+
+            $app = Start-Process -FilePath $target -PassThru
+            $deadline = (Get-Date).AddSeconds(30)
+            do {
+              Start-Sleep -Milliseconds 250
+              $app.Refresh()
+            } until ($app.HasExited -or $app.MainWindowTitle -like "Кадр*" -or (Get-Date) -gt $deadline)
+            if ($app.HasExited -or $app.MainWindowTitle -notlike "Кадр*") {
+              throw "The installed application did not show its main window."
+            }
+            if (!(Get-ItemPropertyValue -Path $runKey -Name KadrWallpaper)) {
+              throw "The installed application did not register autostart."
+            }
+
+            Copy-Item $target $helper
+            Copy-Item $target $next
             $oldHash = (Get-FileHash -Path $target).Hash
             $stream = [IO.File]::Open($next, [IO.FileMode]::Append)
             try { $stream.WriteByte(66) } finally { $stream.Dispose() }
             $newHash = (Get-FileHash -Path $next).Hash
-            $arguments = @("--apply-kadr-update", "4294967295", "kadr-wallpaper.exe", (Get-Item $next).Length, $newHash, "exit")
-            $installer = Start-Process -FilePath $helper -ArgumentList $arguments -PassThru
-            if (!$installer.WaitForExit(35000)) {
-              $installer.Kill()
-              throw "The packaged updater did not exit."
+            $arguments = @("--apply-kadr-update-file", "$($app.Id)", ('"{0}"' -f $target), (Get-Item $next).Length, $newHash, "exit")
+            $updater = Start-Process -FilePath $helper -ArgumentList $arguments -PassThru
+            Start-Sleep -Seconds 1
+            if ($updater.HasExited -or (Get-FileHash -Path $target).Hash -ne $oldHash) {
+              throw "The update did not wait for Kadr to close."
             }
-            if ($installer.ExitCode -ne 0 -or (Get-FileHash -Path $target).Hash -ne $newHash) {
+            if (!$app.CloseMainWindow() -or !$app.WaitForExit(15000) -or $app.ExitCode -ne 0) {
+              throw "Closing the main window did not stop Kadr."
+            }
+            if (!$updater.WaitForExit(35000) -or $updater.ExitCode -ne 0 -or (Get-FileHash -Path $target).Hash -ne $newHash) {
               throw "The packaged updater did not install the verified candidate."
             }
-            if ((Get-FileHash -Path (Join-Path $stage "previous.exe")).Hash -ne $oldHash) {
-              throw "The packaged updater did not retain the previous executable."
+            if ((Test-Path $next) -or (Get-ChildItem -Path $appDir -Directory -Force)) {
+              throw "Updating left a staging directory next to the app or an unused download."
+            }
+
+            $remove = Start-Process -FilePath $uninstaller -ArgumentList $options -PassThru -Wait
+            if ($remove.ExitCode -ne 0 -or (Test-Path $target) -or
+                (Get-ItemPropertyValue -Path $runKey -Name KadrWallpaper -ErrorAction SilentlyContinue)) {
+              throw "Uninstall did not remove the application and its startup entry."
             }
           } finally {
-            Remove-Item -LiteralPath $root -Recurse -Force
+            foreach ($process in @($app, $updater)) {
+              if ($process -and !$process.HasExited) { $process.Kill(); $process.WaitForExit() }
+            }
+            Remove-Item -LiteralPath $helper, $next -ErrorAction SilentlyContinue
           }
       - name: Upload Windows files
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -75,6 +118,7 @@ jobs:
           path: |
             dist/kadr-wallpaper.exe
             dist/kadr-wallpaper-windows-x64.zip
+            dist/Kadr-Setup.exe
           if-no-files-found: error
 
   release:
@@ -91,4 +135,9 @@ jobs:
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" kadr-wallpaper.exe kadr-wallpaper-windows-x64.zip --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
+        run: |
+          gh release create "$GITHUB_REF_NAME" kadr-wallpaper.exe kadr-wallpaper-windows-x64.zip Kadr-Setup.exe \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --latest --prerelease=false
+          gh api "repos/$GITHUB_REPOSITORY/releases/latest" > latest.json
+          jq -e --arg tag "$GITHUB_REF_NAME" \
+            '.tag_name == $tag and .draft == false and .prerelease == false and (.assets | map(select(.state == "uploaded" and .digest != null)) | length == 3)' latest.json

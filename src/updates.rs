@@ -3,11 +3,10 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,
-    io::{self, Read, Seek, SeekFrom},
-    path::{Path, PathBuf},
+    io::{self, Read, Seek, SeekFrom, Write},
+    path::PathBuf,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tempfile::TempDir;
 use ureq::{
     http::{Response, Uri, header::LOCATION},
     tls::{RootCerts, TlsConfig, TlsProvider},
@@ -25,9 +24,8 @@ const MAX_EXE: u64 = 64 * 1024 * 1024;
 const MAX_METADATA: u64 = 1024 * 1024;
 const CHECK_INTERVAL: u64 = 12 * 60 * 60;
 const STAGING_PREFIX: &str = ".kadr-update-";
-const CANDIDATE: &str = "next.exe";
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Release {
     pub version: Version,
     size: u64,
@@ -36,7 +34,7 @@ pub struct Release {
 
 pub struct Package {
     pub release: Release,
-    stage: TempDir,
+    candidate: File,
     target: PathBuf,
 }
 
@@ -208,45 +206,39 @@ fn download_body(release: &Release) -> Result<ureq::Body, String> {
 pub fn download(release: Release) -> Result<Package, String> {
     let target = std::env::current_exe()
         .map_err(|error| format!("Не удалось найти текущий EXE. {error}"))?;
-    let parent = target.parent().ok_or("Не удалось найти папку Кадра.")?;
-    let stage = tempfile::Builder::new()
-        .prefix(STAGING_PREFIX)
-        .tempdir_in(parent)
-        .map_err(|error| format!("Не удалось записать в папку Кадра. {error}"))?;
-    let candidate = stage.path().join(CANDIDATE);
+    // Windows closes and removes this file even if the app exits during download.
+    let mut candidate = tempfile::tempfile()
+        .map_err(|error| format!("Не удалось открыть временный файл Windows. {error}"))?;
     let mut source = download_body(&release)?
         .into_reader()
         .take(release.size + 1);
-    let mut output =
-        File::create(&candidate).map_err(|error| format!("Не удалось сохранить EXE. {error}"))?;
-    let size = io::copy(&mut source, &mut output)
+    let size = io::copy(&mut source, &mut candidate)
         .map_err(|error| format!("Не удалось скачать EXE. {error}"))?;
     if size != release.size {
         return Err("Размер загруженного EXE не совпадает с релизом.".into());
     }
-    output
-        .sync_all()
+    candidate
+        .flush()
         .map_err(|error| format!("Не удалось сохранить EXE. {error}"))?;
-    drop(output);
-    verify_exe(&candidate, release.size, &release.digest)?;
+    verify_exe(&mut candidate, release.size, &release.digest)?;
     Ok(Package {
         release,
-        stage,
+        candidate,
         target,
     })
 }
 
-fn verify_exe(path: &Path, size: u64, digest: &str) -> Result<(), String> {
-    fn verified(path: &Path, size: u64, digest: &str) -> io::Result<bool> {
+fn verify_exe(file: &mut File, size: u64, digest: &str) -> Result<(), String> {
+    fn verified(file: &mut File, size: u64, digest: &str) -> io::Result<bool> {
         if !(1..=MAX_EXE).contains(&size) || !valid_digest(digest) {
             return Ok(false);
         }
-        let mut file = File::open(path)?;
         if file.metadata()?.len() != size {
             return Ok(false);
         }
+        file.rewind()?;
         let mut hasher = Sha256::new();
-        let bytes = io::copy(&mut file.by_ref().take(size + 1), &mut hasher)?;
+        let bytes = io::copy(&mut Read::by_ref(file).take(size + 1), &mut hasher)?;
         if bytes != size || !format!("{:x}", hasher.finalize()).eq_ignore_ascii_case(digest) {
             return Ok(false);
         }
@@ -260,10 +252,11 @@ fn verify_exe(path: &Path, size: u64, digest: &str) -> Result<(), String> {
         file.seek(SeekFrom::Start(pe))?;
         let mut header = [0u8; 6];
         file.read_exact(&mut header)?;
+        file.rewind()?;
         Ok(header == *b"PE\0\0\x64\x86")
     }
 
-    match verified(path, size, digest) {
+    match verified(file, size, digest) {
         Ok(true) => Ok(()),
         Ok(false) => {
             Err("Загруженный EXE не прошёл проверку SHA-256 или формата Windows x64.".into())
@@ -319,13 +312,15 @@ mod tests {
         let path = dir.path().join(EXE);
         std::fs::write(&path, &bytes).unwrap();
         let digest = format!("{:x}", Sha256::digest(&bytes));
-        assert!(verify_exe(&path, bytes.len() as u64, &digest).is_ok());
-        assert!(verify_exe(&path, bytes.len() as u64, &"0".repeat(64)).is_err());
+        let mut file = File::open(&path).unwrap();
+        assert!(verify_exe(&mut file, bytes.len() as u64, &digest).is_ok());
+        assert!(verify_exe(&mut file, bytes.len() as u64, &"0".repeat(64)).is_err());
+        drop(file);
         bytes[68] = 0x4c;
         std::fs::write(&path, &bytes).unwrap();
         assert!(
             verify_exe(
-                &path,
+                &mut File::open(&path).unwrap(),
                 bytes.len() as u64,
                 &format!("{:x}", Sha256::digest(&bytes))
             )

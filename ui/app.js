@@ -212,15 +212,17 @@ function renderUpdates() {
     error: info.message,
   };
   get("app-version").textContent = state.app_version ? `v${state.app_version}` : "";
-  get("update-message").textContent = labels[info.status];
-  get("update-message").classList.toggle("error", info.status === "error");
+  get("update-message").textContent = info.message ?? labels[info.status];
+  get("update-message").classList.toggle("error", Boolean(info.message));
   get("auto-update").checked = Boolean(state.auto_update);
   get("auto-update").disabled = false;
   get("check-updates").disabled = ["checking", "downloading", "ready"].includes(info.status);
   const action = get("update-action");
   action.hidden = info.status !== "available" && info.status !== "ready";
   action.disabled = info.status === "ready" && state.status === "applying";
-  action.textContent = info.status === "ready" ? "Установить и перезапустить" : "Скачать обновление";
+  action.textContent = info.status === "ready"
+    ? "Установить и перезапустить"
+    : info.message ? "Повторить загрузку" : "Скачать обновление";
 }
 
 window.kadr = {
